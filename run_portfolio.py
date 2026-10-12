@@ -55,6 +55,8 @@ def build_parser():
     p.add_argument("--seed", type=int, default=0, help="--priority random의 시드. 기본 0")
     p.add_argument("--seeds", type=int, default=1,
                    help="--priority random일 때 시드 0..N-1로 반복해 결과 분포를 보여준다(우선순위 가정에 대한 민감도). 기본 1")
+    p.add_argument("--data-label", dest="data_label", default=None, choices=["real", "synthetic"],
+                   help="데이터가 실제 시장 데이터인지 합성인지 리포트 머리글에 표시. 기본 None이면 '미표시'")
     p.add_argument("--output", default="output")
     return p
 
@@ -111,6 +113,8 @@ def run_portfolio(ns, loader=None, out_dir: Path | None = None):
         res.benchmark = buy_hold_benchmark(closes, res.equity.index[0], res.equity.index[-1], ppy)
     print(f"[설정] 시장 {ns.market}, 프로필 {ns.profile}, 보유 최대 {hold}봉, 후보 거래 {len(cand)}건, "
           f"종목 {len(closes)}개, 신호 {'전부' if signals is None else signals}")
+    from backtest.report_common import portfolio_header
+    print(portfolio_header(res, any_ck, len(cand), ns.data_label) + "\n")
     print(format_portfolio_report(res, fails))
     if len(results) > 1:
         tr = np.array([r.stats.get("total_return", np.nan) for r in results])

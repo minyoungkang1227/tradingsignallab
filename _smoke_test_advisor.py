@@ -165,8 +165,11 @@ sys.argv = ["run_advisor.py", "--mode", "query", "--market", "krx",
 ra.main()
 print("HARNESS_OK")
 '''
+# 윈도우 파이프 기본 인코딩(cp949)에서 한글/특수문자 출력이 죽지 않도록 자식에게 UTF-8을 명시한다.
+import os
+_env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
 proc = subprocess.run([sys.executable, "-c", harness], cwd=str(Path(__file__).parent),
-                       capture_output=True, text=True, timeout=120)
+                       capture_output=True, text=True, encoding="utf-8", env=_env, timeout=120)
 print(proc.stdout[-3000:])
 if proc.returncode != 0:
     print(proc.stderr[-3000:])

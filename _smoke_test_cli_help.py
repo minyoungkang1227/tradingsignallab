@@ -11,6 +11,7 @@ argparse는 help 문자열에 %-포맷을 적용한다. 그래서 리터럴 퍼�
 이 테스트는 옵션을 추가할 때마다 자동으로 그걸 잡는다.
 """
 import argparse
+import os
 import subprocess
 import sys
 
@@ -57,8 +58,11 @@ print(f"[PASS] 1) help 문자열 {len(helps)}개 전부 %-포맷 통과")
 
 
 # --- 2) 실제로 `--help`를 실행해봐도 죽지 않는가 ----------------------------
+# 윈도우에서는 파이프로 받는 자식 프로세스의 기본 인코딩이 cp949라 도움말의 '—' 등을 못 쓴다.
+# 자식에게 UTF-8을 명시해서 환경과 무관하게 같은 조건에서 검사한다.
+_env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
 r = subprocess.run([sys.executable, "run_backtest.py", "--help"],
-                    capture_output=True, text=True, timeout=120)
+                    capture_output=True, text=True, encoding="utf-8", env=_env, timeout=120)
 assert r.returncode == 0, f"--help 종료코드 {r.returncode}\n{r.stderr[-600:]}"
 assert "usage:" in r.stdout
 print(f"[PASS] 2) `run_backtest.py --help` 정상 종료 (출력 {len(r.stdout):,}자)")

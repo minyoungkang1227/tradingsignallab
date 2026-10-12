@@ -311,6 +311,8 @@ def run_extended_studies(dfs_by_indicator: dict, args, slippage_arg, out_dir: Pa
                         judge_horizon=judge_horizon, warmup_bars=args.oos_warmup,
                         min_test_n=args.oos_min_test_n, alpha=args.oos_alpha,
                         require_barrier=args.oos_require_barrier)
+        from backtest.report_common import oos_header
+        print("\n" + oos_header(res, ck_oos, getattr(args, "data_label", None)))
         print("\n" + format_oos_report(res))
         res.summary_train.to_csv(out_dir / "oos_train_summary.csv", index=False, encoding="utf-8-sig")
         res.summary_test.to_csv(out_dir / "oos_test_summary.csv", index=False, encoding="utf-8-sig")
@@ -329,6 +331,8 @@ def run_extended_studies(dfs_by_indicator: dict, args, slippage_arg, out_dir: Pa
                           min_folds=args.wf_min_folds, judge_horizon=judge_horizon,
                           warmup_bars=args.oos_warmup, min_test_n=args.oos_min_test_n,
                           alpha=args.oos_alpha, require_barrier=args.oos_require_barrier)
+        from backtest.report_common import walk_forward_header
+        print("\n" + walk_forward_header(wf, ck_wf, getattr(args, "data_label", None)))
         print("\n" + format_walk_forward_report(wf))
         wf.folds.to_csv(out_dir / "wf_folds.csv", index=False, encoding="utf-8-sig")
         wf.selected.to_csv(out_dir / "wf_selected.csv", index=False, encoding="utf-8-sig")
@@ -343,6 +347,8 @@ def run_extended_studies(dfs_by_indicator: dict, args, slippage_arg, out_dir: Pa
         regimes = classify_regime(price_df, ma_len=args.regime_ma_len, ret_len=args.regime_ret_len,
                                   vol_len=args.regime_vol_len, z_thr=args.regime_z_thr)
         rres = regime_study(dfs_by_indicator, regimes, ck)
+        from backtest.report_common import regime_header
+        print("\n" + regime_header(rres, ck, judge_horizon, getattr(args, "data_label", None)))
         print("\n" + format_regime_report(rres, judge_horizon, min_n=args.regime_min_n))
         if not rres.summary.empty:
             rres.summary.to_csv(out_dir / "regime_summary.csv", index=False, encoding="utf-8-sig")
@@ -351,7 +357,8 @@ def run_extended_studies(dfs_by_indicator: dict, args, slippage_arg, out_dir: Pa
     return out
 
 
-def main():
+def build_parser():
+    """CLI 옵션 정의. main()과 문서·옵션 일치 테스트가 같은 파서를 쓴다."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--market", choices=["upbit", "krx"], required=True)
     p.add_argument("--symbol", required=True, help="upbit: 'KRW-BTC' 형식 / krx: '005930' 형식 종목코드")
@@ -463,6 +470,9 @@ def main():
                          "슬리피지 10bp, Newey-West, 겹침 제거, DSR, 배리어(순차·경제성)를 한 번에 켠다. "
                          "직접 준 옵션이 프리셋보다 우선한다. 비용 수치는 이 저장소의 참고값이므로 "
                          "현재 세율을 확인해 --cost-bps로 덮어쓸 것. 기본 None(프리셋 없음)")
+    p.add_argument("--data-label", dest="data_label", default=None, choices=["real", "synthetic"],
+                    help="이번에 쓴 데이터가 실제 시장 데이터인지 합성 데이터인지 리포트 머리글에 표시한다. 코드는 스스로 "
+                         "구분할 수 없으므로 실행자가 알려야 한다. 기본 None이면 '미표시'로 표시한다")
     p.add_argument("--barrier-sequential", dest="barrier_sequential", action="store_true",
                     help="--barrier일 때 앞 거래가 청산되기 전에 진입하는 거래를 배리어 통계에서 뺀다"
                          "(순차 거래). 겹치는 이벤트를 그대로 세면 표본이 부풀려 배리어 기반 DSR이 낙관적으로 "
@@ -566,6 +576,11 @@ def main():
                          "<output>/execution_log.csv (여러 심볼을 같은 경로로 반복 실행하면 "
                          "signal_id 기준 중복 없이 누적된다)")
     p.add_argument("--output", default="output")
+    return p
+
+
+def main():
+    p = build_parser()
     args = p.parse_args()
     from backtest.profiles import apply_profile, explicit_dests
     _changes = apply_profile(args, args.profile, explicit_dests(p, sys.argv[1:]))

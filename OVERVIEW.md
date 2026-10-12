@@ -1,24 +1,29 @@
 # Trading Signal Lab — 전체 개요
 
-Pine Script 지표 5개(기관 변동 캔들, Delta Trading, Big Sales, Ultimate RSI, VP Box)를
+Pine Script 지표(기관 변동 캔들, Delta Trading, Big Sales, Ultimate RSI, VP Box + 조합 필터)를
 파이썬으로 재구현하고, 각 신호가 통계적으로 유의미한 예측력을 갖는지 **이벤트
-스터디(event study)** 방식으로 검증한 뒤, 그 결과가 이미 알려진 팩터(사이즈·가치·
-모멘텀) 프리미엄의 재포장은 아닌지까지 확인하는 프로젝트입니다. 포지션 관리까지
-포함한 완전한 백테스터가 아니라, "5개 지표 중 실전에 쓸 만한 게 있는지" 1차로
-거르는 통계적 스크리닝 도구입니다.
+스터디(event study)** 로 검증한 뒤, 표본 외(OOS)·반복 Walk-forward·시장 국면·경제적 성과
+(R 기대값, 손익분기 승률)·포트폴리오 시뮬레이션까지 확장 검증하는 **통계 검증 도구**입니다.
+텔레그램 자동 알림과 Streamlit 대시보드도 포함합니다.
+
+**현재 할 수 있는 일:** 과거 신호 성과 분석, 통계 검증(BH·DSR), 표본 외 검증, 시장 국면 분석,
+위험·경제적 성과 측정, 자동 알림.
+**현재 입증되지 않은 일:** 새로운 시장 환경에서의 안정적인 수익, 포트폴리오 단위 실전 성과,
+머신러닝에 의한 개별 신호 성공확률 예측. 실제 시장 데이터로 이 검증을 통과했다고 기록된 신호는
+아직 없습니다(15절의 검증 현황 참고). 합성 데이터 결과는 성과가 아닙니다.
 
 ---
 
-## 1. 전체 파이프라인 (0 → 7단계)
+## 1. 전체 파이프라인 (0 → 10단계)
 
 ```
 [0] 데이터 수집
       data/upbit.py, data/krx.py
       → OHLCV DataFrame (open, high, low, close, volume)
       ▼
-[1] 지표 신호 생성 (5종, 원본 Pine Script 재구현)
+[1] 지표 신호 생성 (5종 + 조합 필터, 원본 Pine Script 재구현)
       indicators/institutional_displacement.py, delta_trading.py,
-      big_sales.py, ultimate_rsi.py, vp_box.py
+      big_sales.py, ultimate_rsi.py, vp_box.py, combo_filter.py(캔들 구조·거래량 델타·추세를 연속 점수로 결합, 6번째 신호)
       → 원본 df + 이벤트 컬럼(bull_shift, crossover_confirmed, ...)
       ▼
 [2] 신호 필터링 (원 신호를 더 엄격하게 거르는 레이어)
@@ -55,6 +60,19 @@ Pine Script 지표 5개(기관 변동 캔들, Delta Trading, Big Sales, Ultimate
       [3]의 원 신호 t-stat + [5]의 알파·알파 t-stat + [3]의 다중검정 보정 결과를
       규칙(if/else)으로 판정
       → "채택"/"보류"/"기각" + 근거 문장. LLM 호출 없음(재현성·비용·지연 회피)
+      ▼
+[8] 확장 검증 (run_backtest.py의 옵션으로 켠다, 기본은 꺼짐)
+      backtest/profiles.py (--profile realistic), oos.py (--oos-train-end),
+      walkforward.py (--wf-*), regime.py (--regime), triple_barrier.py/economics
+      → 표본 외 유지 여부, fold 간 안정성, 국면별 성과, R 기대값·손익분기 승률
+      ▼
+[9] 포트폴리오 시뮬레이션 (run_portfolio.py)
+      backtest/portfolio.py: 1거래 위험 고정, 동시 포지션·총노출 상한, 신호 충돌 규칙
+      → 누적수익률, MDD, 거래 수, 상한에 걸려 줄거나 건너뛴 횟수 (합성이면 성과 아님)
+      ▼
+[10] 알림·대시보드 (alerts/, app.py)
+      GitHub Actions(평일 16:10 KST) → 신호 감지 → 텔레그램. 국내주식은 BH → DSR 통과분만,
+      업비트 코인은 즉시 알림
 ```
 
 **--market upbit 자동 분기**: 가상자산은 4~5단계(KRX 유니버스 기반 SMB/HML/WML
@@ -84,9 +102,13 @@ Pine Script 지표 5개(기관 변동 캔들, Delta Trading, Big Sales, Ultimate
 | 5. 팩터 조정 알파 | `backtest/engine.py::factor_adjust/event_alpha` | 완료 (합성데이터로 검증; 모멘텀 필터 시 WML 자동 제외; 코인은 자동 스킵) |
 | 6. 리포팅 | `run_backtest.py` | 완료 (summary.csv/event_curves.png/judgment.csv) |
 | 7. 판단 (규칙 기반) | `decision/rule_based.py` | 완료 (LLM 미사용, 다중검정 보정 결과까지 반영) |
+| 8. 확장 검증 | `backtest/profiles.py`, `oos.py`, `walkforward.py`, `regime.py`, `triple_barrier.py` | 코드·합성 테스트 완료. **실데이터 결과 없음** |
+| 9. 포트폴리오 | `backtest/portfolio.py`, `run_portfolio.py` | 코드·합성 테스트 완료. **실데이터 결과 없음** |
+| 10. 알림·대시보드 | `alerts/`, `app.py` | 구성됨(운영 이력은 Actions 로그). 대시보드에 OOS 등 신규 열은 아직 없음 |
 
-이 저장소 밖(아직 미착수): 실거래 자동화(업비트 API·TVExtBot 웹훅 연동), LLM 기반
-판단 레이어(도입해도 규칙 기반을 대체하지 않고 나란히 비교할 예정).
+이 저장소에 없는 것: 실거래 주문 자동화(업비트 API·TVExtBot 웹훅 연동), LLM 기반 판단
+레이어(도입해도 규칙 기반을 대체하지 않고 나란히 비교할 예정), 머신러닝 기반 신호 성공확률
+예측, 실제 시장 데이터로 얻은 검증 결과 기록.
 
 ---
 
@@ -99,6 +121,7 @@ Pine Script 지표 5개(기관 변동 캔들, Delta Trading, Big Sales, Ultimate
 | Big Sales | 최근 N봉 내내 상승 마감이 없다가 거래량 폭증 | 최근 N봉 내내 하락 마감이 없다가 거래량 폭증 |
 | Ultimate RSI | 과매도(20) 구간에서 위로 이탈(반등) | 과매수(80) 구간에서 아래로 이탈(반락) |
 | VP Box | 직전 기간 POC(최다거래가) 가격까지 내려왔다 지지 확인 | 직전 기간 POC 가격까지 올라왔다 저항 확인 |
+| 콤보 필터 (`combo_filter`) | 캔들 구조·거래량 델타·추세 점수를 연속값으로 결합한 composite_score가 임계 초과(상승 방향) | 같은 점수가 하락 방향 |
 
 원본 Pine Script와의 근사 차이는 각 파일 상단 docstring에 명시했습니다(예: 기관
 변동 캔들은 캔들 내부 매수/매도 분할 표시만 생략, VP Box는 실시간 박스 대신
@@ -511,7 +534,54 @@ python run_advisor.py --mode query --market krx --symbol 005930 \
 
 ---
 
-## 10. 실행 예시 모음
+## 10. DSR·트리플 배리어·경제성 (`--deflate`, `--barrier*`)
+
+- **DSR(Deflated Sharpe Ratio, 임계 0.95, 최소 20건)**: 같은 표에서 여러 신호·보유기간을 시도한 것을
+  감안해 "많이 해보다 우연히 나온 최고값"을 걸러냅니다. BH(FDR 0.10)가 p값 기준이라면 DSR은 시도
+  횟수를 반영한 샤프 기준이라 둘을 AND로 씁니다.
+- **트리플 배리어(`--barrier`)**: 익절 2σ·손절 1σ·시간 한도로 거래를 끝냅니다. `--barrier-sequential`이면
+  앞 거래가 끝나기 전의 신호는 건너뛰는 순차 거래, `--barrier-economics`는 R 기대값·손익분기 승률·
+  비용/1R 배수를 계산합니다.
+- 기본은 모두 꺼짐입니다. `--profile realistic`이 켭니다.
+
+## 11. 실전 프로필·OOS·Walk-forward·국면 (`backtest/profiles.py`, `oos.py`, `walkforward.py`, `regime.py`)
+
+- **`--profile realistic`**: 신호 다음 봉 시가 진입(entry_lag 1, open), 왕복 비용(KRX 36bp/업비트 10bp),
+  슬리피지 10bp, Newey-West, 겹침 제거, DSR, 순차 배리어·경제성을 한 번에 켭니다. 직접 준 옵션이 프리셋보다
+  우선합니다. 비용 수치는 이 저장소 도움말의 참고값이며 **현재 세율로 확인한 값이 아닙니다**. 실행 전에
+  `--cost-bps`로 덮어쓰세요. 프로필을 안 주면 기존 동작 그대로입니다.
+- **OOS(`--oos-train-end`)**: 학습 구간에서 BH AND DSR로 신호를 고르고, 학습 끝에서 `최대 보유기간 + 진입지연`만큼
+  퍼지(purge)한 뒤 검증 구간에서 단측 p < α/k(Bonferroni)로 유지 여부를 봅니다.
+- **Walk-forward(`--wf-first-train-end`, `--wf-test-bars` 등)**: 확장창(시작 고정, 끝만 전진)으로 fold마다 OOS를 반복합니다.
+  신호별로 fold 결과를 역분산 가중 합산하고(z·p, Bonferroni α/m), Cochran Q로 fold 간 이질성을 검정해
+  `안정 / 불균질 / 불안정 / 판정불가`를 냅니다. 한 fold에서만 엣지가 있으면 합산 z가 유의해도 `불균질`입니다.
+- **국면(`--regime`)**: MA200과 60봉 수익률 z(임계 0.5)로 상승/하락/횡보를 나누고, 국면별 성과에 전역 BH를 적용합니다.
+
+## 12. 포트폴리오 시뮬레이터 (`backtest/portfolio.py`, `run_portfolio.py`)
+
+감시리스트 여러 종목의 후보 거래(비순차 배리어 거래)를 한 계좌에 올립니다. 비중은 1거래 위험 고정
+(`w = risk_pct / (sl_mult·σ)`)이고, 종목당 최대 비중(0.25)·최대 동시 포지션(5)·총노출(1.0)·
+최소 체결 비율(0.5) 상한에 걸리면 비중을 줄이거나 건너뜁니다. 같은 종목 충돌·보유 중 중복 신호는 규칙에
+따라 처리하고, 우선순위는 `low_vol` 또는 `random(seed)`입니다. 일별 평가손익으로 에쿼티와 MDD를 계산하고
+매수후보유와 비교합니다. 이것은 **시뮬레이션**이며 통계 검증이 아닙니다(리포트의 기준·결과는 "해당 없음").
+실데이터 결과가 없으므로 포트폴리오 단위 실전 성과는 입증되지 않았습니다.
+
+## 13. 알림·대시보드 (`alerts/`, `app.py`)
+
+GitHub Actions가 평일 16:10 KST(cron `10 7 * * 1-5` UTC)에 `alerts/check_signals.py`를 실행해 감시리스트
+(`alerts/watchlist.json`)의 신호를 확인하고 텔레그램으로 보냅니다. 국내주식은 BH → DSR을 통과한 신호만,
+업비트 코인은 즉시 알림입니다. 상태는 `alerts/state.json`에 저장하고 `alerts/github_sync.py`가 저장소와
+동기화합니다. 토큰 등 인증정보는 GitHub Secrets에만 두며, 채팅이나 코드에 노출되면 즉시 재발급합니다.
+
+### 성과 리포트 표준 블록
+
+OOS·Walk-forward·국면·포트폴리오 리포트는 맨 위에 같은 7개 항목(분석/데이터/기간/체결/표본/기준/결과)을
+같은 순서로 출력합니다(`backtest/report_common.py`). `--data-label real|synthetic`을 생략하면 `미표시`이고
+비용이 0이면 `※비용 미반영`이 붙습니다.
+
+---
+
+## 14. 실행 예시 모음
 
 ```bash
 # 기본 실행 (업비트 코인, 일봉 1000개) — 4~5단계는 자동으로 건너뜀
@@ -538,6 +608,15 @@ python run_backtest.py --market krx --symbol 005930 --start 20220101 --end 20260
   --factor-csv output/kr_factors.csv
 ```
 
+```bash
+# 확장 검증 (profile 한 줄로 실전 조건, 비용 수치는 현재 세율로 덮어쓸 것)
+python run_backtest.py --market krx --symbol 005930 --start 20200101 --end 20260901 \
+  --profile realistic --oos-train-end 2024-06-28 --data-label real
+python run_backtest.py --market krx --symbol 005930 --start 20200101 --end 20260901 \
+  --profile realistic --wf-first-train-end 2023-12-29 --wf-test-bars 60 --regime --data-label real
+python run_portfolio.py --market krx --profile realistic --sim-start 2025-01-01 --data-label real
+```
+
 **결과물(`output/` 폴더)**: `summary.csv`(지표×방향×보유기간별 평균수익률·승률·
 t-stat·p-value·significant_bh), `event_curves.png`(신호별 평균 누적수익률 곡선),
 `judgment.csv`(`--factor-csv`를 줬을 때만 생성 — 지표별 "채택"/"보류"/"기각"
@@ -547,7 +626,7 @@ t-stat·p-value·significant_bh), `event_curves.png`(신호별 평균 누적수�
 
 ---
 
-## 11. 파일 구조 & 테스트
+## 15. 파일 구조 & 테스트
 
 ```
 data/                시세·거시데이터 수집 (업비트 REST API, pykrx/KRX Open API, 한국은행 ECOS)
@@ -557,10 +636,19 @@ data/                시세·거시데이터 수집 (업비트 REST API, pykrx/K
                        하나 실패해도 나머지는 계속 수집)를 정의
   krx.py              pykrx/yfinance 폴백 경로 + 신규 KRX Open API(AUTH_KEY) 경로
   ecos.py             한국은행 ECOS Open API(원달러 환율 등, KRX/FDR 교차검증용)
-indicators/          5개 지표 재구현 + 모멘텀 필터 + 유동성 필터(Amihud 2002)
+indicators/          지표 6종 재구현(5종 + combo_filter) + 모멘텀 필터 + 유동성 필터(Amihud 2002)
 backtest/engine.py   이벤트 스터디 엔진 (forward_return, event_study, event_returns,
                      compare_all, factor_adjust, event_alpha, benjamini_hochberg,
                      cluster_robust_t_stat)
+backtest/deflated.py, triple_barrier.py, economics.py   DSR, 트리플 배리어, R 기대값·손익분기
+backtest/profiles.py     --profile realistic 프리셋
+backtest/oos.py, walkforward.py, regime.py   표본 외, 반복 Walk-forward, 시장 국면
+backtest/portfolio.py    포트폴리오 시뮬레이터
+backtest/report_common.py  성과 리포트 표준 블록(분석/데이터/기간/체결/표본/기준/결과)
+backtest/execution_log.py  신호 실행 로그(CSV)
+alerts/              텔레그램 알림(check_signals, telegram, state, github_sync, config)
+app.py               Streamlit 대시보드
+tools/gen_option_table.py  argparse에서 옵션·기본값 표 생성(17절)
 factors/kr_fama_french.py  SMB/HML/WML 팩터 구성
 decision/rule_based.py     규칙 기반 판단 레이어
 research/param_search.py   IS/OOS 파라미터 탐색 (anchor search, plateau, 시도횟수
@@ -570,16 +658,52 @@ advisor/             매수/보유/매도 어드바이저 (evaluator.py: 종목 
 run_backtest.py      전체 파이프라인 CLI 진입점
 run_param_search.py  IS/OOS 파라미터 탐색 CLI 진입점
 run_advisor.py       매수/보유/매도 어드바이저 CLI 진입점
+run_portfolio.py     포트폴리오 시뮬레이션 CLI 진입점
 build_kr_factors.py  팩터 구성 전용 CLI
 PIPELINE.md          파이프라인 아키텍처 문서(이 문서의 원본 중 하나)
+README.md            프로젝트 소개, 할 수 있는 일/입증되지 않은 일, 검증 현황
 ```
 
-네트워크가 막힌 환경에서도(이 코드베이스는 pykrx/업비트 API 접속이 필요) 계산
-로직 자체가 맞는지 검증하는 자체(스모크) 테스트 14종이 있고, 전부 합성 데이터로
-"손으로 계산한 기대값과 정확히 일치하는지"를 확인합니다.
+아래 표는 **합성 데이터로 계산 로직이 맞는지**를 확인하는 테스트입니다. 손으로 계산한 기대값과 일치하는지,
+경계·예외 처리, 기본값이 기존 동작을 보존하는지를 봅니다. 이것은 실제 시장에서 신호가 통한다는 증거가
+아닙니다. 테스트가 출력하는 수익률·t값은 인위적으로 만든 데이터의 값이며 성과로 인용하지 않습니다.
+개수는 늘어나므로 고정 표기하지 않고, 저장소의 `_smoke_test*.py`와 `smoke_test_*.py`를 파일별로
+`python <파일>`로 실행합니다.
+
+### 15-1. 합성 데이터 정확성 테스트
 
 | 테스트 파일 | 검증 대상 |
 |---|---|
+
+| `_smoke_test_oos.py` | purge 구간 계산, 학습 선택→검증 유지 판정, test_end 창 |
+| `_smoke_test_deflated.py`, `_smoke_test_dsr_power.py`, `_smoke_test_compare_all_dsr.py` | DSR 계산, 검정력, compare_all 통합 |
+| `_smoke_test_triple_barrier.py`, `_smoke_test_barrier_study.py` | 트리플 배리어 청산 규칙·순차 거래·가격 포함 출력 |
+| `_smoke_test_economics.py` | R 기대값, 손익분기 승률, 비용 배수 |
+| `_smoke_test_regime.py` | 국면 분류와 국면별 BH |
+| `_smoke_test_profiles.py` | 프로필 적용·사용자 옵션 우선·기본값 보존 |
+| `_smoke_test_walkforward.py` | fold 생성, 신호별 합산, 이질성(Cochran Q) 판정, 경계 처리 |
+| `_smoke_test_portfolio.py` | 1R 비중·상한·충돌 규칙·에쿼티·MDD 손계산 |
+| `_smoke_test_run_portfolio.py` | run_portfolio.py CLI 배관과 리포트 헤더 |
+| `_smoke_test_cli_oos_regime.py`, `_smoke_test_cli_help.py` | run_backtest.py 확장 옵션 배관, 도움말 |
+| `_smoke_test_combo_filter.py` | 콤보 필터 점수·신호 |
+| `_smoke_test_report_common.py` | 표준 리포트 블록 항목·순서·라벨·비용 미반영 표기 |
+| `_smoke_test_docs_sync.py` | OVERVIEW 옵션 대조표가 argparse 실제 정의와 일치하는지 |
+| `_smoke_test_execution_log.py` | 실행 로그 손계산, signal_id 결정성, 재실행 시 중복 없음 |
+| `_smoke_test_alerts.py`, `smoke_test_alerts.py`, `smoke_test_github_sync.py` | 알림 판정·상태 저장, GitHub 동기화(base64, 409 충돌), 네트워크 호출은 모킹 |
+
+### 15-2. 실제 시장 데이터 검증 현황 (합성 테스트와 별개)
+
+| 항목 | 상태 |
+|---|---|
+| 신호별 이벤트 스터디 (실데이터) | 사용자 환경에서 실행 필요. 기록된 결과 없음 |
+| OOS·Walk-forward·국면·포트폴리오 (실데이터) | 미실시. 지앤비에스 에코(382800) Colab은 데이터 품질 점검에서 멈춰 있음 |
+| 팩터 SMB/HML/WML | 실행 미검증 (pykrx 전종목 조회 필요) |
+| KRX Open API·ECOS | 실제 응답 필드·날짜 형식 대조 미검증 |
+| 프로필 비용 수치 (KRX 36bp, 업비트 10bp) | 저장소 참고값. 현재 세율로 확인되지 않음 |
+
+실데이터 결과가 생기면 종목·기간·실행 조건·표본 수·검증 통과 여부를 날짜와 함께 이 표에 기록합니다.
+
+---|---|
 | `_smoke_test.py` | 5개 지표 + 필터 전체 파이프라인이 정상 동작하는지 |
 | `_smoke_test_factors.py` | SMB/HML 계산식이 사이즈·가치효과를 정확히 분리하는지 |
 | `_smoke_test_wml.py` | WML(모멘텀 팩터) 계산 정확성 |
@@ -598,7 +722,7 @@ PIPELINE.md          파이프라인 아키텍처 문서(이 문서의 원본 �
 
 ---
 
-## 12. 다음에 할 만한 것
+## 16. 다음에 할 만한 것
 
 0. `data/krx.py`의 `fetch_krx_open_api_ohlcv()`와 `data/ecos.py`는 실제 네트워크가
    열린 환경에서 처음 실행할 때 응답 필드명(`_KRX_OPEN_API_FIELDS`)·날짜 형식을
@@ -621,3 +745,110 @@ PIPELINE.md          파이프라인 아키텍처 문서(이 문서의 원본 �
 5. 확률미분방정식 공부와 연결하고 싶다면, `forward_return`의 분포를 정규분포
    가정 없이 부트스트랩으로 재검정하거나, GBM 대비 실제 수익률 분포의 두꺼운
    꼬리(fat tail)를 비교하는 방향으로 확장 가능.
+
+---
+
+## 17. 옵션·기본값 대조표
+
+`run_backtest.py`와 `run_portfolio.py`의 `argparse` 정의에서 자동 생성한 표입니다. 직접 고치지 말고
+`python tools/gen_option_table.py`로 다시 만들어 붙여 넣으세요. 코드와 어긋나면 `_smoke_test_docs_sync.py`가 실패합니다.
+
+<!-- OPTION_TABLE_START -->
+| 스크립트 | 옵션 | 기본값 | 의미(도움말 첫 문장) |
+|---|---|---|---|
+| `run_backtest.py` | `--market` | `없음` |  |
+| `run_backtest.py` | `--symbol` | `없음` | upbit: 'KRW-BTC' 형식 / krx: '005930' 형식 종목코드 |
+| `run_backtest.py` | `--unit` | `day` | upbit 전용 |
+| `run_backtest.py` | `--minute-unit` | `60` | upbit unit=minute일 때 분봉 단위 |
+| `run_backtest.py` | `--count` | `1000` | upbit 캔들 개수 |
+| `run_backtest.py` | `--start` | `없음` | krx 시작일 YYYYMMDD |
+| `run_backtest.py` | `--end` | `없음` | krx 종료일 YYYYMMDD |
+| `run_backtest.py` | `--horizons` | `1,3,5,10,20` | 검증할 보유기간(봉수), 콤마구분 |
+| `run_backtest.py` | `--id-vol-mode` | `multiple` | 기관 변동 캔들의 거래량 이상치 판정 방식: multiple=평균의 배수(원본, 기본값), zscore=Kyle(1985) 기반 z-스코어 |
+| `run_backtest.py` | `--id-vol-mult` | `2` | vol-mode=multiple일 때 임계 배수 |
+| `run_backtest.py` | `--id-z-threshold` | `1.96` | vol-mode=zscore일 때 임계 z값 (기본 1.96 = 95% 유의수준) |
+| `run_backtest.py` | `--mom-filter` | `꺼짐` | Jegadeesh & Titman(1993) 모멘텀 필터 활성화: 롱 이벤트는 상승 모멘텀 상위권, 숏 이벤트는 하락 모멘텀 상위권에서만 인정 |
+| `run_backtest.py` | `--mom-lookback` | `126` | 모멘텀 측정 구간(봉수) |
+| `run_backtest.py` | `--mom-window` | `252` | 모멘텀 퍼센타일을 매길 롤링 윈도우(봉수) |
+| `run_backtest.py` | `--mom-threshold` | `0.7` | 0.5~1.0 |
+| `run_backtest.py` | `--entry-lag` | `0` | 신호 확정(t봉 종가) 후 실제 진입까지 걸리는 봉 수 |
+| `run_backtest.py` | `--entry-col` | `없음` | entry-lag>0일 때 실제 진입가로 쓸 컬럼명 (예: open) |
+| `run_backtest.py` | `--cost-bps` | `0` | 왕복 거래 수수료(bp, 1bp=0.01%) |
+| `run_backtest.py` | `--slippage-bps` | `0` | 왕복 슬리피지(bp) |
+| `run_backtest.py` | `--newey-west` | `꺼짐` | 보유기간이 길어 이벤트 간 순방향수익률 추적 구간이 겹칠 때(overlapping events) 생기는 자기상관을 Newey-West HAC 보… |
+| `run_backtest.py` | `--drop-overlapping` | `꺼짐` | 보유기간이 겹치는 이벤트를 애초에 표본에서 제거한다(직전 채택 이벤트로부터 보유기간 이상 떨어진 이벤트만 남김) |
+| `run_backtest.py` | `--liq-filter` | `꺼짐` | Amihud(2002) 비유동성 필터 활성화: 그 종목 자기 역사 대비 비유동성이 높은(--liq-threshold 초과) 구간의 이벤트는 실제… |
+| `run_backtest.py` | `--liq-window` | `20` | 일별 Amihud 비유동성을 평활화할 롤링 윈도우(봉수) |
+| `run_backtest.py` | `--liq-percentile-window` | `252` | Amihud 값을 그 종목 자기 자신의 과거 분포 대비 퍼센타일로 정규화할 롤링 윈도우(봉수) |
+| `run_backtest.py` | `--liq-threshold` | `0.9` | 0~1 |
+| `run_backtest.py` | `--dynamic-slippage` | `꺼짐` | 슬리피지를 --slippage-bps 고정값 대신 Amihud(2002) 비유동성 퍼센타일에 비례해 봉마다 |
+| `run_backtest.py` | `--max-extra-slippage-bps` | `50` | --dynamic-slippage일 때 비유동성이 가장 심한 시점(percentile=1)에 --slippage-bps에 추가로 더해질 최대 슬… |
+| `run_backtest.py` | `--deflate` | `꺼짐` | 디플레이티드 샤프비율(DSR, Bailey & Lopez de Prado 2014)을 추가로 계산한다 |
+| `run_backtest.py` | `--dsr-threshold` | `0.95` | --deflate일 때 significant_dsr 판정 임계값 |
+| `run_backtest.py` | `--dsr-min-events` | `20` | --deflate일 때 DSR 판정에 요구하는 최소 이벤트 수 |
+| `run_backtest.py` | `--dsr-extra-trials` | `0` | --deflate일 때, 이 실행 바깥에서 이미 시도한 검정 횟수 |
+| `run_backtest.py` | `--barrier` | `꺼짐` | 같은 신호를 손절/익절을 걸고 매매했을 때의 실현 수익률을 tb_* 컬럼으로 나란히 보여준다(트리플 배리어) |
+| `run_backtest.py` | `--barrier-pt-mult` | `2` | --barrier일 때 익절선을 실현변동성의 몇 배로 둘지 |
+| `run_backtest.py` | `--barrier-sl-mult` | `1` | --barrier일 때 손절선을 실현변동성의 몇 배로 둘지 |
+| `run_backtest.py` | `--barrier-vol-span` | `20` | --barrier일 때 배리어 폭 기준이 되는 실현변동성의 지수가중 구간 |
+| `run_backtest.py` | `--barrier-no-intrabar` | `켜짐` | --barrier일 때 봉 내부 고가/저가 대신 종가만으로 배리어 터치를 판정한다(일봉 고저를 신뢰하기 어려울 때) |
+| `run_backtest.py` | `--profile` | `없음` | 실전형 실행 조건 프리셋 |
+| `run_backtest.py` | `--data-label` | `없음` | 이번에 쓴 데이터가 실제 시장 데이터인지 합성 데이터인지 리포트 머리글에 표시한다 |
+| `run_backtest.py` | `--barrier-sequential` | `꺼짐` | --barrier일 때 앞 거래가 청산되기 전에 진입하는 거래를 배리어 통계에서 뺀다(순차 거래) |
+| `run_backtest.py` | `--barrier-economics` | `꺼짐` | --barrier일 때 경제적 유의성 컬럼(R 단위 기대값, 손익분기 승률, 비용 대비 배수)을 요약표에 추가한다 |
+| `run_backtest.py` | `--oos-train-end` | `없음` | 표본 외(OOS) 검증을 켠다 |
+| `run_backtest.py` | `--oos-test-start` | `없음` | 검증 구간 첫 날(YYYY-MM-DD) |
+| `run_backtest.py` | `--oos-warmup` | `60` | OOS: 지표가 안정되기 전 학습 초기 몇 봉의 이벤트를 뺄지 |
+| `run_backtest.py` | `--oos-min-test-n` | `10` | OOS: 검증 구간에서 판정하려면 필요한 최소 이벤트 수 |
+| `run_backtest.py` | `--oos-alpha` | `0.05` | OOS: 검증 구간 유의수준 |
+| `run_backtest.py` | `--oos-require-barrier` | `꺼짐` | OOS: 학습 선택 조건에 배리어 기반 DSR 통과도 요구한다(손절을 걸고도 통과한 신호만) |
+| `run_backtest.py` | `--wf-first-train-end` | `없음` | 반복 Walk-forward 검증을 켠다 |
+| `run_backtest.py` | `--wf-test-bars` | `60` | Walk-forward: 검증 조각 길이(봉) |
+| `run_backtest.py` | `--wf-step-bars` | `없음` | Walk-forward: 학습 끝을 한 번에 전진시키는 봉 수 |
+| `run_backtest.py` | `--wf-max-folds` | `없음` | Walk-forward: 가장 최근 N개 fold만 사용 |
+| `run_backtest.py` | `--wf-min-folds` | `3` | Walk-forward: 신호가 '안정/불균질/불안정'으로 판정되려면 선택돼야 하는 최소 fold 수 |
+| `run_backtest.py` | `--regime` | `꺼짐` | 시장 국면(상승/하락/횡보, 종목 자체 가격 기준)별로 나눠 신호 성과를 검증한다 |
+| `run_backtest.py` | `--regime-ma-len` | `200` | 국면 분류: 추세선(이동평균) 길이 |
+| `run_backtest.py` | `--regime-ret-len` | `60` | 국면 분류: 최근 수익률 계산 구간 |
+| `run_backtest.py` | `--regime-vol-len` | `60` | 국면 분류: 변동성 계산 구간 |
+| `run_backtest.py` | `--regime-z-thr` | `0.5` | 국면 분류: 최근 수익률의 방향성(변동성 대비) 임계값 |
+| `run_backtest.py` | `--regime-min-n` | `5` | 국면 일관성 판단에 쓸 국면별 최소 관측 수 |
+| `run_backtest.py` | `--fdr` | `0.1` | 다중 검정 보정(Benjamini-Hochberg) 목표 false discovery rate |
+| `run_backtest.py` | `--factor-csv` | `없음` | build_kr_factors.py로 만든 SMB/HML/WML csv 경로 |
+| `run_backtest.py` | `--factor-cols` | `없음` | 팩터 회귀에 쓸 열 이름(콤마 구분, 예: 'SMB,HML') |
+| `run_backtest.py` | `--t-threshold` | `3` | 7단계 규칙 기반 판단에서 '유의하다'고 볼 \|t-stat\| 최소값 |
+| `run_backtest.py` | `--big-sales-len` | `7` |  |
+| `run_backtest.py` | `--vp-bins` | `20` |  |
+| `run_backtest.py` | `--vp-freq` | `W` | VP Box 구간 (W=주, M=월) |
+| `run_backtest.py` | `--combo-body-min-pct` | `55` | 콤보필터: 몸통이 전체 고가-저가 범위에서 차지하는 최소 비율(%) |
+| `run_backtest.py` | `--combo-wick-max-pct` | `25` | 콤보필터: 진행 방향 반대쪽 꼬리의 최대 허용 비율(%) |
+| `run_backtest.py` | `--combo-vol-len` | `20` | 콤보필터: 거래량 SMA 길이 |
+| `run_backtest.py` | `--combo-vol-mult` | `1.6` | 콤보필터: 거래량 스파이크 판정 배수 |
+| `run_backtest.py` | `--combo-ma-len` | `50` | 콤보필터: 추세 필터 이동평균 길이 |
+| `run_backtest.py` | `--combo-ma-type` | `EMA` | 콤보필터: 추세 필터 이동평균 종류 |
+| `run_backtest.py` | `--combo-score-threshold` | `0.62` | 콤보필터: composite_score 신호 인정 임계값(0~1) |
+| `run_backtest.py` | `--log-executions` | `꺼짐` | 이번 실행에서 뜬 신호 이벤트들을 signal_id 단위로 체결 로그 CSV에 기록한다(메타라벨링용 원재료) |
+| `run_backtest.py` | `--execution-log-path` | `없음` | --log-executions일 때 기록할 CSV 경로 |
+| `run_backtest.py` | `--output` | `output` |  |
+| `run_portfolio.py` | `--watchlist` | `alerts/watchlist.json` | 종목 목록 JSON |
+| `run_portfolio.py` | `--market` | `krx` | 한 번에 한 시장만 돌린다(달력·연환산 기준이 달라 섞으면 해석이 흐려진다) |
+| `run_portfolio.py` | `--start` | `없음` | krx 데이터 시작(YYYYMMDD) |
+| `run_portfolio.py` | `--end` | `없음` | krx 데이터 끝(YYYYMMDD) |
+| `run_portfolio.py` | `--profile` | `realistic` | 실행 조건 프리셋 |
+| `run_portfolio.py` | `--cost-bps` | `없음` | 프리셋의 왕복비용을 덮어씀(bp) |
+| `run_portfolio.py` | `--slippage-bps` | `없음` | 프리셋의 슬리피지를 덮어씀(bp) |
+| `run_portfolio.py` | `--signals` | `없음` | 쓸 신호 라벨을 쉼표로 |
+| `run_portfolio.py` | `--hold-bars` | `없음` | 배리어 최대 보유 봉수 |
+| `run_portfolio.py` | `--sim-start` | `없음` | 이 날짜 이후 진입만 시뮬레이션(YYYY-MM-DD) |
+| `run_portfolio.py` | `--sim-end` | `없음` | 이 날짜 이전 진입만 시뮬레이션(YYYY-MM-DD) |
+| `run_portfolio.py` | `--risk-pct` | `0.005` | 1거래 위험(1R)을 자본의 몇 %로 할지(소수) |
+| `run_portfolio.py` | `--max-positions` | `5` | 최대 동시 보유 종목 수 |
+| `run_portfolio.py` | `--max-gross` | `1` | 총 노출 상한(자본 대비) |
+| `run_portfolio.py` | `--max-weight` | `0.25` | 종목당 비중 상한 |
+| `run_portfolio.py` | `--min-fill-frac` | `0.5` | 남은 여력이 의도 비중의 이 비율 미만이면 건너뜀(이상이면 줄여서 매수) |
+| `run_portfolio.py` | `--priority` | `low_vol` | 같은 날 후보가 많을 때 순서 |
+| `run_portfolio.py` | `--seed` | `0` | --priority random의 시드 |
+| `run_portfolio.py` | `--seeds` | `1` | --priority random일 때 시드 0..N-1로 반복해 결과 분포를 보여준다(우선순위 가정에 대한 민감도) |
+| `run_portfolio.py` | `--data-label` | `없음` | 데이터가 실제 시장 데이터인지 합성인지 리포트 머리글에 표시 |
+| `run_portfolio.py` | `--output` | `output` |  |
+<!-- OPTION_TABLE_END -->

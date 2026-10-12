@@ -111,4 +111,18 @@ s4 = pd.read_csv(out4 / "summary.csv")
 pd.testing.assert_frame_equal(s4[s0.columns], s0, check_exact=False, rtol=1e-12)   # 본 분석은 불변
 print("[PASS] 7) Walk-forward: fold 4개(손계산), 파일 3개, DSR 자동 켜짐 안내, 본 분석 summary 불변")
 
+# --- 8) 표준 요약 블록: OOS·Walk-forward·국면 리포트에 같은 형식, --data-label 반영 ---------------------
+out5, txt5 = run_cli(["--oos-train-end", tr_end, "--oos-warmup", "60", "--regime", "--wf-first-train-end", wf_end,
+                      "--wf-test-bars", "100", "--data-label", "synthetic"])
+assert txt5.count("[실행 조건·검증 요약]") == 3, txt5.count("[실행 조건·검증 요약]")
+assert txt5.count("합성 데이터 — 실제 시장 성과가 아님") == 3
+for kind in ["표본 외(OOS) 검증", "반복 Walk-forward 검증(확장창)", "시장 국면별 검증"]:
+    assert f"분석  {kind}" in txt5, kind
+assert "IS(학습)" in txt5 and "수수료·세금 5bp(왕복)" in txt5                      # run_cli가 준 --cost-bps 5
+_, txt6 = run_cli(["--oos-train-end", tr_end, "--oos-warmup", "60"])
+assert "미표시" in txt6 and "합성 데이터" not in txt6
+_, txt7 = run_cli([])
+assert "[실행 조건·검증 요약]" not in txt7                                        # 확장 분석을 안 켜면 출력 불변
+print("[PASS] 8) 표준 요약 블록 3종(OOS/WF/국면) 출력·--data-label 반영·미지정은 '미표시'·분석 미요청이면 출력 불변")
+
 print("\n모든 스모크테스트 통과. (합성 데이터 결과 — 실제 시장 성과가 아님)")

@@ -36,6 +36,8 @@ assert res.stats["n_trades"] > 0 and res.stats["max_concurrent"] <= 5
 for f in ["portfolio_trades.csv", "portfolio_equity.csv", "portfolio_candidates.csv"]:
     assert (out / f).exists(), f
 assert "포트폴리오 시뮬레이션" in txt and "참고 기준선" in txt and "[건너뜀]" in txt
+assert "[실행 조건·검증 요약]" in txt and "미표시" in txt and "해당 없음" in txt      # 표준 헤더(데이터 라벨 미지정)
+_, tl = go(["--data-label", "synthetic"]); assert "합성 데이터 — 실제 시장 성과가 아님" in tl
 # 불변식: 노출 한도, 거래 수 <= 후보 수, 비용 반영(profile realistic이 entry_lag=1·36bp)
 assert res.trades["weight"].max() <= 0.25 + 1e-12 and len(res.trades) <= len(cand)
 assert ((cand["gross_ret"] - cand["ret"]) > 0.0045).all() and ((cand["gross_ret"] - cand["ret"]) < 0.0047).all()   # 36+10bp
