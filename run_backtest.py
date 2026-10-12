@@ -142,7 +142,22 @@ def run(df: pd.DataFrame, args) -> tuple[pd.DataFrame, dict, dict, "float | pd.S
                                     entry_lag=args.entry_lag, entry_col=args.entry_col,
                                     cost_bps=args.cost_bps, slippage_bps=slippage_arg,
                                     newey_west=args.newey_west, drop_overlapping=args.drop_overlapping,
-                                    fdr=args.fdr)
+                                    fdr=args.fdr,
+                                    # 디플레이티드 샤프비율(backtest.deflated). getattr 기본값
+                                    # 경로라 이 필드가 없는 기존 args 네임스페이스(alerts.config의
+                                    # build_args 등)도 그대로 동작한다 — 기본 False이므로
+                                    # 켜지 않으면 출력 컬럼도 이전과 완전히 동일하다.
+                                    deflate=getattr(args, "deflate", False),
+                                    dsr_threshold=getattr(args, "dsr_threshold", 0.95),
+                                    min_events=getattr(args, "dsr_min_events", 20),
+                                    extra_trials=getattr(args, "dsr_extra_trials", 0),
+                                    # 트리플 배리어(backtest.triple_barrier). 같은 getattr
+                                    # 하위호환 경로. 기본 False면 tb_* 컬럼이 아예 안 생긴다.
+                                    barrier=getattr(args, "barrier", False),
+                                    pt_mult=getattr(args, "barrier_pt_mult", 2.0),
+                                    sl_mult=getattr(args, "barrier_sl_mult", 1.0),
+                                    vol_span=getattr(args, "barrier_vol_span", 20),
+                                    use_intrabar=getattr(args, "barrier_intrabar", True))
     if args.entry_lag > 0 or args.cost_bps > 0 or args.slippage_bps > 0 or args.dynamic_slippage:
         slip_desc = "동적(Amihud 기반, 위 로그 참고)" if args.dynamic_slippage else f"{args.slippage_bps}bp(고정)"
         print(f"[체결 가정] entry_lag={args.entry_lag}봉 "
@@ -324,6 +339,45 @@ def main():
     p.add_argument("--max-extra-slippage-bps", dest="max_extra_slippage_bps", type=float, default=50.0,
                     help="--dynamic-slippage일 때 비유동성이 가장 심한 시점(percentile=1)에 "
                          "--slippage-bps에 추가로 더해질 최대 슬리피지(bp). 기본 50")
+    p.add_argument("--deflate", dest="deflate", action="store_true",
+                    help="디플레이티드 샤프비율(DSR, Bailey & Lopez de Prado 2014)을 추가로 "
+                         "계산한다. BH보정이 쓰는 p-value는 수익률이 정규분포라고 가정하는데, "
+                         "실제 이벤트 수익률은 왜도·첨도가 달라 그 가정이 깨진다. DSR은 왜도· "
+                         "첨도를 표준오차에 직접 넣고, 동시에 '여러 번 시도해서 고른 최고값'이라는 "
+                         "선택편의까지 기준선에 반영한다. 합성 랜덤워크 검증에서 BH만 쓸 때 "
+                         "거짓양성 5.2%%가 DSR을 같이 걸면 0.1%% 수준으로 떨어졌다(대신 진짜 신호 "
+                         "검출력도 79%%->50%%로 낮아지는 트레이드오프가 있다). "
+                         "--drop-overlapping과 같이 쓰기를 권장한다")
+    p.add_argument("--dsr-threshold", dest="dsr_threshold", type=float, default=0.95,
+                    help="--deflate일 때 significant_dsr 판정 임계값. 기본 0.95(5%% 유의수준)")
+    p.add_argument("--dsr-min-events", dest="dsr_min_events", type=int, default=20,
+                    help="--deflate일 때 DSR 판정에 요구하는 최소 이벤트 수. 기본 20. "
+                         "이벤트가 2~4개인 신호는 샤프비율·왜도·첨도 추정 자체가 무의미하고, "
+                         "그런 값이 섞이면 기준선 추정이 오염되어 판정이 거꾸로 뒤집힌다")
+    p.add_argument("--dsr-extra-trials", dest="dsr_extra_trials", type=int, default=0,
+                    help="--deflate일 때, 이 실행 바깥에서 이미 시도한 검정 횟수. "
+                         "파라미터 탐색으로 조합 500개를 훑어본 뒤 제일 좋은 설정으로 돌린 "
+                         "거라면 500을 넣어야 선택편의가 제대로 반영된다. 기본 0은 "
+                         "'이 실행이 전부'라는 가장 낙관적인 가정")
+    p.add_argument("--barrier", dest="barrier", action="store_true",
+                    help="같은 신호를 손절/익절을 걸고 매매했을 때의 실현 수익률을 "
+                         "tb_* 컬럼으로 나란히 보여준다(트리플 배리어). 기존 "
+                         "평균수익률은 '정확히 h봉 뒤 종가' 하나만 보기 때문에, 중간에 "
+                         "크게 밀렸다가 회복한 거래도 성공으로 집계된다 — 실제로 손절을 "
+                         "걸고 매매했다면 그 거래는 잘렸다. 두 값이 크게 벌어지는 신호일수록 "
+                         "실제 운용 난이도가 높다는 뜻")
+    p.add_argument("--barrier-pt-mult", dest="barrier_pt_mult", type=float, default=2.0,
+                    help="--barrier일 때 익절선을 실현변동성의 몇 배로 둘지. 기본 2.0")
+    p.add_argument("--barrier-sl-mult", dest="barrier_sl_mult", type=float, default=1.0,
+                    help="--barrier일 때 손절선을 실현변동성의 몇 배로 둘지. 기본 1.0. "
+                         "변동성은 종가기준인데 터치 판정은 봉 내부 고저로 하므로, 1.0은 "
+                         "생각보다 타이트하다(최대 10봉 설정에서 평균 2~3봉 만에 잘리는 "
+                         "수준). 평균 보유봉이 지나치게 짧으면 이 값을 키울 것")
+    p.add_argument("--barrier-vol-span", dest="barrier_vol_span", type=int, default=20,
+                    help="--barrier일 때 배리어 폭 기준이 되는 실현변동성의 지수가중 구간. 기본 20봉")
+    p.add_argument("--barrier-no-intrabar", dest="barrier_intrabar", action="store_false",
+                    help="--barrier일 때 봉 내부 고가/저가 대신 종가만으로 배리어 터치를 "
+                         "판정한다(일봉 고저를 신뢰하기 어려울 때). 기본은 고저 사용")
     p.add_argument("--fdr", dest="fdr", type=float, default=0.10,
                     help="다중 검정 보정(Benjamini-Hochberg) 목표 false discovery rate. "
                          "이번 실행에서 검증하는 전체 신호x방향x보유기간 조합을 한꺼번에 놓고 보정한다. "

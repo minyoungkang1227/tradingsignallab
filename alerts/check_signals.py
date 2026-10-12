@@ -38,6 +38,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 import run_backtest as rb
 from backtest.engine import SIGNAL_SPECS
 
@@ -81,6 +83,14 @@ def check_one(item: dict, state: dict) -> list[str]:
     require_significance = item.get("require_significance", item["market"] != "upbit")
 
     has_bh_col = "significant_bh" in summary.columns if summary is not None else False
+    has_dsr_col = "significant_dsr" in summary.columns if summary is not None else False
+    has_tb_cols = ("tb_n" in summary.columns) if summary is not None else False
+    require_barrier_profit = bool(getattr(args, "require_barrier_profit", False))
+    pt_mult = getattr(args, "barrier_pt_mult", 2.0)
+    sl_mult = getattr(args, "barrier_sl_mult", 1.0)
+    if require_significance and not has_dsr_col:
+        print(f"[참고] {label}({item['symbol']}): summary에 significant_dsr 컬럼이 "
+              f"없어 BH보정만으로 판정합니다(alerts.config의 deflate 설정 확인).")
     if require_significance and not has_bh_col:
         print(f"[경고] {label}({item['symbol']}): summary에 significant_bh 컬럼이 "
               f"없습니다(표본이 너무 적어 BH보정 자체가 스킵됐을 수 있음) — 이번 "
@@ -97,18 +107,48 @@ def check_one(item: dict, state: dict) -> list[str]:
             if not has_bh_col:
                 continue
             sig_row = summary[(summary["signal"] == signal_label) & (summary["horizon"] == judge_horizon)]
-            bh_ok = bool(sig_row["significant_bh"].iloc[0]) if not sig_row.empty else False
+            if sig_row.empty:
+                continue
+            bh_ok = bool(sig_row["significant_bh"].iloc[0])
             if not bh_ok:
                 continue  # 원시 이벤트는 떴지만 BH보정을 통과 못한 신호 — 알리지 않음(조건 강화)
+            # DSR(디플레이티드 샤프비율) 2차 게이트. BH의 p-value는 정규분포
+            # 가정에서 나온 값이라 왜도·첨도가 큰 수익률에서 유의성을 과대평가한다.
+            # DSR은 그 비정규성과 "여러 번 시도해서 고른 최고값"이라는 선택편의를
+            # 같이 보정한다. 컬럼이 없으면(구버전 engine 등) BH 결과만 쓴다.
+            if has_dsr_col:
+                dsr_ok = bool(sig_row["significant_dsr"].iloc[0])
+                if not dsr_ok:
+                    continue
 
         state_key = f"{item['market']}:{item['symbol']}:{indicator_key}:{event_col}"
         date_str = str(last_date.date() if hasattr(last_date, "date") else last_date)
         if state.get(state_key) == date_str:
             continue  # 이미 같은 날짜로 알림을 보냈음 (중복 방지)
 
+        # --- 손절 걸고 매매했을 때의 과거 실적(트리플 배리어) ---
+        # "신호가 통계적으로 진짜인가"(위의 BH/DSR 게이트)와 "그래서 손절 걸고
+        # 매매하면 벌 수 있나"는 다른 질문이다. 앞은 게이트로 걸렀고, 뒤는
+        # 판단 재료로 메시지에 같이 싣는다 — 고정 보유기간 평균수익률만 보면
+        # 중간에 크게 밀렸다 회복한 거래도 성공으로 잡히기 때문.
+        barrier_line = ""
+        tb_row = summary[(summary["signal"] == signal_label) &
+                          (summary["horizon"] == judge_horizon)] if has_tb_cols else None
+        if tb_row is not None and not tb_row.empty and pd.notna(tb_row["tb_n"].iloc[0]):
+            r = tb_row.iloc[0]
+            if r["tb_n"] >= 1:
+                if require_barrier_profit and r["tb_mean_ret_pct"] <= 0:
+                    continue  # 손절 반영하면 손실인 신호 — 알리지 않음(옵션)
+                barrier_line = (
+                    f"- 손절 반영 과거실적(손절 {sl_mult:g}σ·익절 {pt_mult:g}σ, "
+                    f"최대 {judge_horizon}봉): {int(r['tb_n'])}건 중 "
+                    f"익절 {r['tb_pt_rate']:.0%}·손절 {r['tb_sl_rate']:.0%}, "
+                    f"평균 {r['tb_mean_ret_pct']:+.2f}%, 평균보유 {r['tb_avg_bars']:.1f}봉\n")
+
         direction_kr = "상승(롱)" if direction == 1 else "하락(숏)"
         if require_significance:
-            verify_line = (f"- 보유기간 {judge_horizon}봉 기준, 이번 실행의 BH보정(다중검정) "
+            gate = "BH보정+DSR(디플레이티드 샤프비율)" if has_dsr_col else "BH보정(다중검정)"
+            verify_line = (f"- 보유기간 {judge_horizon}봉 기준, 이번 실행의 {gate} "
                             f"통과 신호입니다.\n")
         else:
             verify_line = ("- 주의: 이 신호는 통계적 검증(BH보정) 없이 원시 이벤트 발생 즉시 "
@@ -118,6 +158,7 @@ def check_one(item: dict, state: dict) -> list[str]:
             f"- 신호: {signal_label} ({direction_kr})\n"
             f"- 기준일: {date_str} / 종가: {last_close:,.2f}\n"
             f"{verify_line}"
+            f"{barrier_line}"
             f"- 참고: 과거 통계(t값·표본수)는 대시보드에서 직접 확인하세요. "
             f"이 알림은 '신호가 떴다'는 사실만 알려줄 뿐, 매매를 추천하는 것이 아닙니다."
         )

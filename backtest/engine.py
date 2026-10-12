@@ -259,7 +259,8 @@ def event_study(df: pd.DataFrame, event_col: str, close_col: str = "close",
         use_idx = _event_idx_for_horizon(h)
         vals = _fwd(h).loc[use_idx].dropna().sort_index()
         if len(vals) == 0:
-            rows.append(dict(horizon=h, n=0, mean=np.nan, std=np.nan, win_rate=np.nan, t_stat=np.nan))
+            rows.append(dict(horizon=h, n=0, mean=np.nan, std=np.nan, win_rate=np.nan,
+                              t_stat=np.nan, skew=np.nan, kurt=np.nan))
             continue
         std = float(vals.std(ddof=1)) if len(vals) > 1 else np.nan
         win_rate = float((vals > 0).mean())
@@ -268,7 +269,18 @@ def event_study(df: pd.DataFrame, event_col: str, close_col: str = "close",
         else:
             mean = float(vals.mean())
             t_stat = mean / (std / np.sqrt(len(vals))) if std and std > 0 else np.nan
-        rows.append(dict(horizon=h, n=len(vals), mean=mean, std=std, win_rate=win_rate, t_stat=t_stat))
+        # 왜도·첨도(원첨도, 정규분포=3). 디플레이티드 샤프비율(backtest.deflated)이
+        # 비정규성 보정에 쓴다 — 여기서 vals가 이미 메모리에 있으므로 같이 계산해
+        # 나중에 원시 이벤트 수익률을 다시 뽑는 비용을 없앤다. 기존 컬럼은 그대로라
+        # table을 읽던 호출부는 영향받지 않는다.
+        if len(vals) > 1 and std and std > 0:
+            _z = (vals.values - mean) / std
+            skew = float(np.mean(_z ** 3))
+            kurt = float(np.mean(_z ** 4))
+        else:
+            skew = kurt = np.nan
+        rows.append(dict(horizon=h, n=len(vals), mean=mean, std=std, win_rate=win_rate,
+                          t_stat=t_stat, skew=skew, kurt=kurt))
     table = pd.DataFrame(rows).set_index("horizon")
 
     curve_vals = []
@@ -302,7 +314,12 @@ def compare_all(dfs_by_indicator: dict[str, pd.DataFrame], horizons=(1, 3, 5, 10
                  max_curve_horizon: int = 20, entry_lag: int = 0,
                  entry_col: str | None = None, cost_bps: float = 0.0,
                  slippage_bps: float | pd.Series = 0.0, newey_west: bool = False,
-                 drop_overlapping: bool = False, fdr: float = 0.10
+                 drop_overlapping: bool = False, fdr: float = 0.10,
+                 deflate: bool = False, dsr_threshold: float = 0.95,
+                 extra_trials: int = 0, min_events: int = 20,
+                 sr_std_method: str = "theoretical",
+                 barrier: bool = False, pt_mult: float = 2.0, sl_mult: float = 1.0,
+                 vol_span: int = 20, use_intrabar: bool = True
                  ) -> tuple[pd.DataFrame, dict[str, EventStudyResult]]:
     """
     dfs_by_indicator: {"institutional_displacement": df1, "delta_trading": df2, ...}
@@ -322,6 +339,73 @@ def compare_all(dfs_by_indicator: dict[str, pd.DataFrame], horizons=(1, 3, 5, 10
     컬럼을 추가한다. 이 두 컬럼은 기존 컬럼(signal/direction/n_events/horizon/
     mean_return_pct/win_rate_pct/t_stat)에 추가되는 것이라, 기존 컬럼만 읽는
     호출부는 그대로 동작한다.
+
+    deflate: True면 디플레이티드 샤프비율(backtest.deflated)까지 계산해
+    sharpe_per_trade / deflated_sr / significant_dsr 컬럼을 추가한다.
+    기본값 False는 기존 동작을 그대로 보존한다(컬럼 자체가 추가되지 않음).
+
+    [왜 BH보정 위에 DSR을 또 얹는가]
+    BH가 쓰는 p-value는 p_value_from_t()가 정규분포를 가정해서 만든 값이다.
+    이벤트 수익률은 왜도·첨도가 정규분포와 다른 게 보통이라, 그 p-value 자체가
+    한쪽으로 치우쳐 있다. DSR은 왜도·첨도를 표준오차에 직접 넣고, 동시에
+    "N번 시도해서 고른 최고값"이라는 선택편의까지 기준선에 반영한다.
+    두 보정은 대체재가 아니라 서로 다른 구멍을 막는다 — 둘 다 통과한 신호만
+    보려면 significant_bh와 significant_dsr을 함께 보면 된다.
+
+    dsr_threshold: significant_dsr 판정 임계값(기본 0.95 = 통상적인 5% 유의수준).
+    extra_trials: 이 호출 바깥에서 이미 시도한 검정 횟수. compare_all은 자기가
+        수행한 검정 수(요약표 행 수)밖에 모르는데, 실제로는 파라미터 탐색
+        (run_param_search)이나 종목을 바꿔가며 돌린 횟수까지 전부 "시도"에
+        포함되어야 선택편의가 제대로 반영된다. 예를 들어 파라미터 조합 500개를
+        미리 훑어본 뒤 제일 좋은 걸로 이 함수를 불렀다면 extra_trials=500을
+        넘겨야 한다. 기본 0은 "이 호출이 전부"라는 가장 낙관적인 가정이므로,
+        실제 탐색을 거쳤다면 반드시 채워 넣어야 DSR이 과대평가되지 않는다.
+
+    min_events: DSR 판정에 요구하는 최소 이벤트 수(기본 20). 이보다 적은
+        조합은 deflated_sr을 NaN으로 두고 유의 판정에서 제외한다.
+        이벤트가 2~4개인 신호는 샤프비율은 물론 왜도·첨도 추정 자체가
+        무의미한데(진짜 SR이 0이어도 n=2면 SR 추정치의 표준편차가 발산한다),
+        그런 값들이 섞이면 sr_std 추정이 오염되어 기준선이 비현실적으로
+        높아지고 "진짜 신호는 떨어뜨리고 표본 적은 노이즈만 통과시키는"
+        정반대 결과가 나온다. 실제로 이 저장소의 12개 신호는 빈도 차이가
+        극심해서(빅세일 0~8건 vs VP박스 70건대) 이 문제가 그대로 재현됐다.
+
+    sr_std_method: 시도 간 샤프비율 흩어짐(sr_std)을 어떻게 추정할지.
+        "theoretical"(기본) — 표본 수로부터 이론적으로 계산(1/sqrt(n-1)).
+            표본 수가 제각각인 상황에 강건해서 기본값으로 삼았다.
+        "observed" — 실제로 관측된 샤프비율들의 표준편차. 모든 시도의 표본
+            수가 비슷할 때만 타당하다.
+
+    barrier: True면 같은 신호를 "손절/익절을 걸고" 매매했을 때의 실현 수익률을
+        tb_* 컬럼으로 나란히 붙인다(backtest.triple_barrier.barrier_study).
+        기본 False는 기존 동작을 그대로 보존한다(컬럼 자체가 추가되지 않음).
+
+        [왜 나란히 붙이는가]
+        기존 mean_return_pct는 "정확히 h봉 뒤 종가" 하나만 본다. 그 사이 경로는
+        무시하므로, 중간에 -18%를 찍고 h봉째에 +2%로 끝난 거래가 "+2% 성공"으로
+        집계된다. 실제로 손절을 걸고 매매했다면 그 거래는 -18% 근처에서 잘렸다.
+        tb_* 컬럼은 같은 신호를 손절 걸고 매매했을 때 실제로 실현됐을 수익률이라,
+        둘을 나란히 놓으면 "이 신호의 성과가 경로를 견딜 수 있는 성과인가"를
+        바로 볼 수 있다. 두 값이 크게 벌어지는 신호일수록 실제 운용 난이도가 높다.
+
+        시간 배리어는 각 horizon 값을 그대로 쓴다 — 같은 시간 예산으로 맞춰야
+        "경로를 보느냐 마느냐"의 차이만 분리된다.
+
+        deflate=True와 같이 켜면 배리어 수익률 기준 DSR(tb_deflated_sr /
+        tb_significant_dsr)도 함께 계산한다. 이쪽이 "손절 걸고 매매했을 때의
+        성과가 다중검정·비정규성을 감안해도 진짜인가"라는, 실제로 묻고 싶은
+        질문에 가장 가까운 판정이다.
+
+    pt_mult / sl_mult: 익절/손절 배리어를 실현변동성의 몇 배로 둘지
+        (기본 2.0 / 1.0 = 1시그마 손절, 2시그마 익절, 손익비 2:1).
+    vol_span: 배리어 스케일에 쓸 실현변동성의 지수가중 구간(기본 20봉).
+    use_intrabar: True(기본)면 봉의 고가/저가로 배리어 터치를 판정한다.
+
+    [DSR 적용 시 주의 — 겹치는 이벤트]
+    DSR은 관측치가 서로 독립이라고 가정한다. drop_overlapping=False면 보유기간이
+    겹치는 이벤트들이 그대로 들어가 자기상관이 생기므로, 실질 표본 수가 n보다
+    적은데도 n으로 계산되어 DSR이 낙관적으로 나온다. deflate=True로 쓸 때는
+    drop_overlapping=True를 같이 켜는 것을 권장한다.
     """
     summary_rows = []
     results: dict[str, EventStudyResult] = {}
@@ -337,18 +421,124 @@ def compare_all(dfs_by_indicator: dict[str, pd.DataFrame], horizons=(1, 3, 5, 10
                            drop_overlapping=drop_overlapping)
         results[label] = res
         for h, row in res.table.iterrows():
-            summary_rows.append(dict(
+            entry = dict(
                 signal=label, direction=("LONG" if direction == 1 else "SHORT"),
                 n_events=res.n_events, horizon=h,
                 mean_return_pct=row["mean"] * 100 if pd.notna(row["mean"]) else np.nan,
                 win_rate_pct=row["win_rate"] * 100 if pd.notna(row["win_rate"]) else np.nan,
                 t_stat=row["t_stat"],
-            ))
+            )
+            if deflate:
+                # 거래당 샤프비율. 연율화하지 않는다 — 관측 1개 = 거래 1건이고
+                # DSR 공식의 n도 거래 수이므로, 연율화하면 단위가 어긋난다.
+                std = row.get("std", np.nan)
+                mean = row.get("mean", np.nan)
+                entry["_sharpe"] = (mean / std if pd.notna(mean) and pd.notna(std)
+                                     and std > 0 else np.nan)
+                entry["_n_obs"] = row.get("n", 0)
+                entry["_skew"] = row.get("skew", np.nan)
+                entry["_kurt"] = row.get("kurt", np.nan)
+            summary_rows.append(entry)
 
     summary = pd.DataFrame(summary_rows)
-    if not summary.empty:
-        summary["p_value"] = summary["t_stat"].apply(p_value_from_t)
-        summary["significant_bh"] = benjamini_hochberg(summary["p_value"].values, fdr=fdr)
+    if summary.empty:
+        return summary, results
+
+    summary["p_value"] = summary["t_stat"].apply(p_value_from_t)
+    summary["significant_bh"] = benjamini_hochberg(summary["p_value"].values, fdr=fdr)
+
+    if barrier:
+        from backtest.triple_barrier import barrier_study
+
+        tb = barrier_study(
+            dfs_by_indicator, SIGNAL_SPECS, horizons=horizons,
+            pt_mult=pt_mult, sl_mult=sl_mult, vol_span=vol_span,
+            entry_lag=entry_lag, entry_col=entry_col, cost_bps=cost_bps,
+            slippage_bps=slippage_bps, use_intrabar=use_intrabar)
+        # left merge — 요약표의 행 구성은 그대로 두고 배리어 컬럼만 덧붙인다.
+        # 배리어 쪽에만 있는 조합(이벤트는 있는데 고정보유기간 집계가 비었던 경우)은
+        # 버려지고, 반대로 배리어 쪽에 없는 조합은 tb_* 가 NaN으로 남는다.
+        summary = summary.merge(tb, on=["signal", "direction", "horizon"], how="left")
+        summary.attrs["barrier_pt_mult"] = pt_mult
+        summary.attrs["barrier_sl_mult"] = sl_mult
+
+    if deflate:
+        from backtest.deflated import (
+            expected_max_sharpe, null_sharpe_dispersion, probabilistic_sharpe_ratio,
+            sharpe_dispersion,
+        )
+
+        def _dsr_block(sharpes, n_obs_arr, skews, kurts):
+            """한 벌의 (샤프, 표본수, 왜도, 첨도)에 대해 DSR을 계산한다.
+            고정 보유기간 수익률과 배리어 수익률에 똑같이 적용하기 위해 함수로
+            뺐다 — 두 경로가 다른 기준선을 쓰면 비교가 성립하지 않으므로,
+            각자 자기 분포에서 기준선을 따로 구하되 절차는 동일해야 한다."""
+            sharpes = np.asarray(sharpes, dtype=float)
+            n_obs_arr = np.asarray(n_obs_arr, dtype=float)
+
+            # 표본이 너무 적은 조합은 애초에 추정 대상에서 뺀다. 포함시키면
+            # sr_std가 오염되어 기준선 자체가 망가진다(min_events 설명 참조).
+            eligible = np.isfinite(sharpes) & (n_obs_arr >= min_events)
+
+            # 시도 횟수 = 판정 가능한 검정 수 + 바깥에서 이미 써버린 횟수
+            n_trials = int(eligible.sum()) + max(0, int(extra_trials))
+
+            if sr_std_method == "observed":
+                sr_std = sharpe_dispersion(sharpes[eligible])
+            elif sr_std_method == "theoretical":
+                sr_std = null_sharpe_dispersion(n_obs_arr[eligible])
+            else:
+                raise ValueError(
+                    f"sr_std_method는 'theoretical' 또는 'observed'여야 합니다: "
+                    f"{sr_std_method!r}")
+
+            bench = expected_max_sharpe(n_trials, sr_std)
+
+            vals = []
+            for ok, sr, n_obs, skew, kurt in zip(eligible, sharpes, n_obs_arr,
+                                                  skews, kurts):
+                if not ok or not np.isfinite(skew) or not np.isfinite(kurt):
+                    vals.append(np.nan)
+                    continue
+                vals.append(probabilistic_sharpe_ratio(
+                    float(sr), bench, int(n_obs), skew=float(skew), kurt=float(kurt)))
+            return vals, n_trials, sr_std, bench, int(eligible.sum())
+
+        # --- 고정 보유기간 수익률 기준 DSR ---
+        dsr_vals, n_trials, sr_std, benchmark, n_eligible = _dsr_block(
+            summary["_sharpe"].values,
+            pd.to_numeric(summary["_n_obs"], errors="coerce").values,
+            summary["_skew"].values, summary["_kurt"].values)
+
+        summary["sharpe_per_trade"] = summary["_sharpe"].values
+        summary["deflated_sr"] = dsr_vals
+        # NaN(판정 불가)은 유의하지 않음으로 처리한다 — 표본 부족을 유의로
+        # 흘려보내지 않기 위해.
+        summary["significant_dsr"] = summary["deflated_sr"].fillna(0.0) >= dsr_threshold
+        summary.attrs["dsr_n_trials"] = n_trials
+        summary.attrs["dsr_sr_std"] = sr_std
+        summary.attrs["dsr_benchmark"] = benchmark
+        summary.attrs["dsr_min_events"] = min_events
+        summary.attrs["dsr_n_eligible"] = n_eligible
+        summary.attrs["dsr_sr_std_method"] = sr_std_method
+
+        # --- 배리어(손절 반영) 수익률 기준 DSR ---
+        # barrier=True일 때만. 이쪽이 "손절 걸고 매매했을 때의 성과가 다중검정·
+        # 비정규성을 감안해도 진짜인가"라는, 실제로 묻고 싶은 질문에 가장 가깝다.
+        if barrier and "tb_sharpe" in summary.columns:
+            tb_vals, tb_trials, tb_sr_std, tb_bench, tb_elig = _dsr_block(
+                summary["tb_sharpe"].values, summary["tb_n"].values,
+                summary["tb_skew"].values, summary["tb_kurt"].values)
+            summary["tb_deflated_sr"] = tb_vals
+            summary["tb_significant_dsr"] = (
+                summary["tb_deflated_sr"].fillna(0.0) >= dsr_threshold)
+            summary.attrs["tb_dsr_n_trials"] = tb_trials
+            summary.attrs["tb_dsr_sr_std"] = tb_sr_std
+            summary.attrs["tb_dsr_benchmark"] = tb_bench
+            summary.attrs["tb_dsr_n_eligible"] = tb_elig
+
+        summary = summary.drop(columns=["_sharpe", "_n_obs", "_skew", "_kurt"])
+
     return summary, results
 
 

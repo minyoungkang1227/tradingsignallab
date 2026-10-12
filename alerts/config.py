@@ -27,7 +27,14 @@ DEFAULTS = dict(
     id_vol_mode="multiple", id_vol_mult=2.0, id_z_threshold=1.96,
     mom_filter=False, mom_lookback=126, mom_window=252, mom_threshold=0.7,
     entry_lag=0, entry_col=None, cost_bps=0.0, slippage_bps=0.0,
-    newey_west=False, drop_overlapping=False,
+    newey_west=False,
+    # [동작 변경] 알림 경로에서만 True로 바꿨다(CLI/대시보드 기본값은 그대로 False).
+    # 보유기간이 겹치는 이벤트를 그대로 두면 서로 거의 같은 구간을 중복해서 세는
+    # 셈이라 실질 표본 수가 n보다 적은데도 n으로 계산되고, 그만큼 t값이 부풀려진다
+    # ("t값이 비정상적으로 크게 나오는" 전형적 원인 중 하나). 아래 deflate=True가
+    # 쓰는 DSR은 관측치 독립을 가정하므로 이 보정 없이는 판정 자체가 낙관적으로
+    # 치우친다.
+    drop_overlapping=True,
     liq_filter=False, liq_window=20, liq_percentile_window=252, liq_threshold=0.9,
     dynamic_slippage=False, max_extra_slippage_bps=50.0,
     fdr=0.10, factor_csv=None, factor_cols=None, t_threshold=3.0,
@@ -35,6 +42,31 @@ DEFAULTS = dict(
     combo_body_min_pct=55.0, combo_wick_max_pct=25.0, combo_vol_len=20,
     combo_vol_mult=1.6, combo_ma_len=50, combo_ma_type="EMA", combo_score_threshold=0.62,
     log_executions=False, execution_log_path=None, output="output",
+    # --- 디플레이티드 샤프비율(backtest.deflated) ---
+    # 알림 경로에서는 기본으로 켠다. 알림은 "유의하다"는 판정 하나로 곧장
+    # 텔레그램을 쏘기 때문에, 눈으로 확인하며 보는 대시보드보다 거짓양성에
+    # 훨씬 민감하다 — 틀린 알림이 반복되면 알림 자체를 무시하게 되고 그러면
+    # 시스템이 있으나 마나다.
+    #
+    # 합성 랜덤워크(진짜 신호 0건) 30회 검증 기준:
+    #   BH보정만  -> 1,800건 중 93건 통과 (거짓양성률 5.17%)
+    #   BH + DSR  -> 1,800건 중  1건 통과 (거짓양성률 0.06%)
+    # 대신 진짜 신호 검출력은 79% -> 50%로 떨어진다. 알림에서는 "놓친 신호"보다
+    # "틀린 알림"의 비용이 크다고 보고 이 트레이드오프를 택했다.
+    # (전부 합성 데이터 기준이며 실제 시장 성과가 아님.)
+    deflate=True, dsr_threshold=0.95, dsr_min_events=20, dsr_extra_trials=0,
+    # --- 트리플 배리어(backtest.triple_barrier) ---
+    # 알림에 "이 신호를 손절 걸고 매매했으면 과거에 실제로 얼마였나"를 같이
+    # 실어주기 위해 켠다. 게이트로는 쓰지 않는다 — 이미 DSR이 검출력을
+    # 79%->50%로 깎았는데 게이트를 하나 더 직렬로 걸면 알림이 거의 안 뜨고,
+    # 배리어 결과는 손절폭(sl_mult) 선택에 민감해서 판정 기준으로 쓰기엔
+    # 불안정하다. "신호가 진짜인가"(DSR)와 "손절 걸고 벌 수 있나"(배리어)는
+    # 다른 질문이므로, 앞은 게이트로 뒤는 정보로 쓴다.
+    # require_barrier_profit=True로 두면 배리어 평균수익이 양수인 신호만
+    # 알리도록 게이트를 추가할 수 있다(기본 꺼짐).
+    barrier=True, barrier_pt_mult=2.0, barrier_sl_mult=1.0,
+    barrier_vol_span=20, barrier_intrabar=True,
+    require_barrier_profit=False,
 )
 
 # krx 종목인데 watchlist.json에 start/end를 안 적었을 때 기본으로 쓸 조회 기간.
