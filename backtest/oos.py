@@ -67,12 +67,15 @@ class OOSResult:
 
 
 def purged_windows(index, train_end, test_start, max_horizon: int, entry_lag: int = 0,
-                   warmup_bars: int = 0) -> OOSWindows:
+                   warmup_bars: int = 0, test_end=None) -> OOSWindows:
     """
     index: 가격 시계열의 DatetimeIndex(오름차순).
     train_end: 학습 구간의 마지막 날(이 날 이하까지가 학습). test_start: 검증 구간 첫 날.
     max_horizon / entry_lag: 퍼지 폭 = max_horizon + entry_lag 봉.
     warmup_bars: 지표가 안정되기 전 초기 봉은 학습 이벤트에서 뺀다.
+    test_end: 검증 구간의 마지막 날. 기본 None이면 데이터 끝까지(기존 동작). 반복 Walk-forward에서
+        검증 구간을 겹치지 않는 조각으로 자를 때 쓴다. 가격은 자르지 않으므로 검증 구간 끝 부근
+        이벤트도 순방향 수익률은 온전히 계산된다.
     """
     idx = pd.DatetimeIndex(index)
     t_end, t_start = pd.Timestamp(train_end), pd.Timestamp(test_start)
@@ -91,8 +94,13 @@ def purged_windows(index, train_end, test_start, max_horizon: int, entry_lag: in
     test_pos = int(idx.searchsorted(t_start, side="left"))
     if test_pos >= len(idx):
         raise ValueError("검증 시작일 이후 데이터가 없습니다.")
-    return OOSWindows(train_lo=idx[lo_pos], train_hi=idx[hi_pos], test_lo=idx[test_pos], test_hi=idx[-1],
-                      n_train_bars=hi_pos - lo_pos + 1, n_test_bars=len(idx) - test_pos, purged_bars=purge)
+    last_pos = len(idx) - 1
+    if test_end is not None:
+        last_pos = int(idx.searchsorted(pd.Timestamp(test_end), side="right")) - 1
+        if last_pos < test_pos:
+            raise ValueError("검증 종료일이 검증 시작일보다 앞이라 검증 구간에 봉이 없습니다.")
+    return OOSWindows(train_lo=idx[lo_pos], train_hi=idx[hi_pos], test_lo=idx[test_pos], test_hi=idx[last_pos],
+                      n_train_bars=hi_pos - lo_pos + 1, n_test_bars=last_pos - test_pos + 1, purged_bars=purge)
 
 
 def mask_events(dfs_by_indicator: dict, signal_specs, lo, hi, blocked=None):
@@ -188,7 +196,7 @@ def _join_train_test(sum_tr: pd.DataFrame, sum_te: pd.DataFrame) -> pd.DataFrame
 def oos_study(dfs_by_indicator: dict, compare_kwargs: dict, train_end, test_start,
               judge_horizon: int | None = None, warmup_bars: int = 60, min_test_n: int = 10,
               alpha: float = 0.05, blocked=None, exclude_signals=(), require_barrier: bool = False,
-              min_n_rank: int = 5, min_rows_rank: int = 10) -> OOSResult:
+              min_n_rank: int = 5, min_rows_rank: int = 10, test_end=None) -> OOSResult:
     """
     dfs_by_indicator: run_backtest.run()이 돌려주는 {지표: 신호가 붙은 df}(전체 기간).
     compare_kwargs: compare_all()에 그대로 넘길 인자(horizons, entry_lag, cost_bps, deflate=True 등).
@@ -206,7 +214,7 @@ def oos_study(dfs_by_indicator: dict, compare_kwargs: dict, train_end, test_star
 
     any_df = next(iter(dfs_by_indicator.values()))
     win = purged_windows(any_df.index, train_end, test_start, max_horizon=max(horizons),
-                         entry_lag=entry_lag, warmup_bars=warmup_bars)
+                         entry_lag=entry_lag, warmup_bars=warmup_bars, test_end=test_end)
 
     masked_tr, rm_tr = mask_events(dfs_by_indicator, SIGNAL_SPECS, win.train_lo, win.train_hi, blocked)
     masked_te, rm_te = mask_events(dfs_by_indicator, SIGNAL_SPECS, win.test_lo, win.test_hi, blocked)

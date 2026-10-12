@@ -291,7 +291,8 @@ def run_extended_studies(dfs_by_indicator: dict, args, slippage_arg, out_dir: Pa
     둘 다 꺼져 있으면 아무것도 하지 않는다(기존 동작 보존). 계산은 backtest.oos / backtest.regime에
     있고 여기는 인자 연결과 출력만 한다(얇은 껍데기 원칙).
     """
-    if not (getattr(args, "oos_train_end", None) or getattr(args, "regime", False)):
+    if not (getattr(args, "oos_train_end", None) or getattr(args, "regime", False)
+            or getattr(args, "wf_first_train_end", None)):
         return None
     ck = build_compare_kwargs(args, slippage_arg)
     out = {}
@@ -316,6 +317,24 @@ def run_extended_studies(dfs_by_indicator: dict, args, slippage_arg, out_dir: Pa
         res.selected.to_csv(out_dir / "oos_selected.csv", index=False, encoding="utf-8-sig")
         print(f"[저장] {out_dir / 'oos_train_summary.csv'}, oos_test_summary.csv, oos_selected.csv")
         out["oos"] = res
+
+    if getattr(args, "wf_first_train_end", None):
+        from backtest.walkforward import walk_forward, format_walk_forward_report
+        ck_wf = dict(ck)
+        if not ck_wf["deflate"]:
+            print("\n[Walk-forward] 신호 선택 규칙이 DSR을 쓰므로 이번 실행에서는 DSR을 자동으로 켭니다.")
+            ck_wf["deflate"] = True
+        wf = walk_forward(dfs_by_indicator, ck_wf, args.wf_first_train_end, args.wf_test_bars,
+                          step_bars=args.wf_step_bars, max_folds=args.wf_max_folds,
+                          min_folds=args.wf_min_folds, judge_horizon=judge_horizon,
+                          warmup_bars=args.oos_warmup, min_test_n=args.oos_min_test_n,
+                          alpha=args.oos_alpha, require_barrier=args.oos_require_barrier)
+        print("\n" + format_walk_forward_report(wf))
+        wf.folds.to_csv(out_dir / "wf_folds.csv", index=False, encoding="utf-8-sig")
+        wf.selected.to_csv(out_dir / "wf_selected.csv", index=False, encoding="utf-8-sig")
+        wf.by_signal.to_csv(out_dir / "wf_by_signal.csv", index=False, encoding="utf-8-sig")
+        print(f"[저장] {out_dir / 'wf_folds.csv'}, wf_selected.csv, wf_by_signal.csv")
+        out["walk_forward"] = wf
 
     if args.regime:
         from backtest.regime import classify_regime, regime_study, format_regime_report
@@ -439,6 +458,11 @@ def main():
     p.add_argument("--barrier-no-intrabar", dest="barrier_intrabar", action="store_false",
                     help="--barrier일 때 봉 내부 고가/저가 대신 종가만으로 배리어 터치를 "
                          "판정한다(일봉 고저를 신뢰하기 어려울 때). 기본은 고저 사용")
+    p.add_argument("--profile", dest="profile", default=None, choices=["realistic"],
+                    help="실전형 실행 조건 프리셋. realistic = 다음 봉 시가 진입, 시장별 왕복비용(KRX 36bp/업비트 10bp), "
+                         "슬리피지 10bp, Newey-West, 겹침 제거, DSR, 배리어(순차·경제성)를 한 번에 켠다. "
+                         "직접 준 옵션이 프리셋보다 우선한다. 비용 수치는 이 저장소의 참고값이므로 "
+                         "현재 세율을 확인해 --cost-bps로 덮어쓸 것. 기본 None(프리셋 없음)")
     p.add_argument("--barrier-sequential", dest="barrier_sequential", action="store_true",
                     help="--barrier일 때 앞 거래가 청산되기 전에 진입하는 거래를 배리어 통계에서 뺀다"
                          "(순차 거래). 겹치는 이벤트를 그대로 세면 표본이 부풀려 배리어 기반 DSR이 낙관적으로 "
@@ -462,6 +486,20 @@ def main():
     p.add_argument("--oos-require-barrier", dest="oos_require_barrier", action="store_true",
                     help="OOS: 학습 선택 조건에 배리어 기반 DSR 통과도 요구한다(손절을 걸고도 통과한 신호만). "
                          "자동으로 --barrier를 켠다. 기본 꺼짐")
+    p.add_argument("--wf-first-train-end", dest="wf_first_train_end", default=None,
+                    help="반복 Walk-forward 검증을 켠다. 첫 학습 구간의 마지막 날(YYYY-MM-DD). 이후 학습 끝을 "
+                         "--wf-test-bars씩 앞으로 옮기며(확장창) 매번 학습에서 신호를 고르고 그 뒤 구간에서 유지되는지 "
+                         "확인한다. 신호별로 fold를 합산하고 fold 간 이질성(Cochran Q)도 본다. "
+                         "자동으로 DSR을 켠다. 기본 None(꺼짐)")
+    p.add_argument("--wf-test-bars", dest="wf_test_bars", type=int, default=60,
+                    help="Walk-forward: 검증 조각 길이(봉). 기본 60. 짧을수록 fold가 늘지만 조각당 표본이 줄어 판정불가가 많아진다")
+    p.add_argument("--wf-step-bars", dest="wf_step_bars", type=int, default=None,
+                    help="Walk-forward: 학습 끝을 한 번에 전진시키는 봉 수. 기본 None이면 --wf-test-bars와 같다"
+                         "(검증 조각이 겹치지 않음). 더 작게 주면 검증 조각이 겹쳐 fold 합산의 독립 가정이 깨진다")
+    p.add_argument("--wf-max-folds", dest="wf_max_folds", type=int, default=None,
+                    help="Walk-forward: 가장 최근 N개 fold만 사용. 기본 None(전부)")
+    p.add_argument("--wf-min-folds", dest="wf_min_folds", type=int, default=3,
+                    help="Walk-forward: 신호가 '안정/불균질/불안정'으로 판정되려면 선택돼야 하는 최소 fold 수. 기본 3")
     p.add_argument("--regime", dest="regime", action="store_true",
                     help="시장 국면(상승/하락/횡보, 종목 자체 가격 기준)별로 나눠 신호 성과를 검증한다. "
                          "국면 전체에 걸친 BH 재보정과 국면 간 부호 일관성을 함께 보여준다. 기본 꺼짐")
@@ -529,6 +567,13 @@ def main():
                          "signal_id 기준 중복 없이 누적된다)")
     p.add_argument("--output", default="output")
     args = p.parse_args()
+    from backtest.profiles import apply_profile, explicit_dests
+    _changes = apply_profile(args, args.profile, explicit_dests(p, sys.argv[1:]))
+    if args.profile:
+        print(f"[프로필 {args.profile}] 적용된 조건:")
+        for dest, o, n in _changes:
+            print(f"  --{dest.replace('_', '-')}: {o} -> {n}")
+        print("  (직접 지정한 옵션은 프리셋보다 우선합니다. 비용 수치는 현재 세율을 확인하세요.)")
 
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)

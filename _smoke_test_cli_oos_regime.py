@@ -100,4 +100,15 @@ except ValueError:
     pass
 print("[PASS] 6) test-start가 train-end보다 앞서면 ValueError(조용히 진행하지 않음)")
 
+# --- 7) --wf-first-train-end -------------------------------------------------------------
+wf_end = str(ix[499].date())
+out4, txt4 = run_cli(["--wf-first-train-end", wf_end, "--wf-test-bars", "100", "--oos-warmup", "60"])
+assert "DSR을 자동으로 켭니다" in txt4 and "반복 Walk-forward" in txt4
+for f in ["wf_folds.csv", "wf_selected.csv", "wf_by_signal.csv"]:
+    assert (out4 / f).exists(), f
+wfo = pd.read_csv(out4 / "wf_folds.csv"); assert len(wfo) == 4        # 499,599,699,799: e+100<=899
+s4 = pd.read_csv(out4 / "summary.csv")
+pd.testing.assert_frame_equal(s4[s0.columns], s0, check_exact=False, rtol=1e-12)   # 본 분석은 불변
+print("[PASS] 7) Walk-forward: fold 4개(손계산), 파일 3개, DSR 자동 켜짐 안내, 본 분석 summary 불변")
+
 print("\n모든 스모크테스트 통과. (합성 데이터 결과 — 실제 시장 성과가 아님)")

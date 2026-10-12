@@ -98,7 +98,8 @@ def triple_barrier_returns(df: pd.DataFrame, event_idx: pd.Index, direction: int
                             entry_lag: int = 0, entry_col: str | None = None,
                             cost_bps: float = 0.0,
                             slippage_bps: float | pd.Series = 0.0,
-                            use_intrabar: bool = True) -> pd.DataFrame:
+                            use_intrabar: bool = True,
+                            include_prices: bool = False) -> pd.DataFrame:
     """
     이벤트들을 트리플 배리어로 청산했을 때의 실현 수익률을 계산한다.
 
@@ -114,6 +115,9 @@ def triple_barrier_returns(df: pd.DataFrame, event_idx: pd.Index, direction: int
         완전히 동일한 의미·관례(기본값도 동일).
     use_intrabar: True면 high/low로 봉 내부 터치를 판정(현실적), False면 종가만
         본다(보수적으로 덜 잘림 — 일봉 high/low를 못 믿는 경우용).
+    include_prices: True면 entry_price(진입가)와 gross_ret(비용 차감 전 방향조정 청산수익률)
+        열을 덧붙인다. 포트폴리오 시뮬레이터(backtest.portfolio)가 보유 중 평가손익을 일별로
+        계산하는 데 필요하다. 기본 False면 반환 열은 이전과 완전히 동일하다.
 
     반환 DataFrame (index=실제 진입이 가능했던 이벤트 시점):
         entry_date   진입 봉
@@ -229,11 +233,13 @@ def triple_barrier_returns(df: pd.DataFrame, event_idx: pd.Index, direction: int
             "ret": net_ret,
             "exit_reason": reason,
             "target_vol": float(target_vol),
+            **({"entry_price": float(entry_price), "gross_ret": float(exit_ret)} if include_prices else {}),
         })
 
     if not rows:
         return pd.DataFrame(columns=["entry_date", "exit_date", "bars_held", "ret",
-                                      "exit_reason", "target_vol"])
+                                      "exit_reason", "target_vol"]
+                                     + (["entry_price", "gross_ret"] if include_prices else []))
 
     out = pd.DataFrame(rows)
     out.index = pd.Index([r["entry_date"] for r in rows], name=df.index.name or "date")
