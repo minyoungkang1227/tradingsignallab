@@ -75,6 +75,40 @@ def load_data(args) -> pd.DataFrame:
     return df
 
 
+def build_compare_kwargs(args, slippage_arg) -> dict:
+    """
+    args(argparse 네임스페이스 또는 alerts.config.build_args의 결과)에서 compare_all()에 넘길
+    인자를 만든다. run()과 OOS·국면 검증(backtest.oos / backtest.regime)이 같은 설정으로
+    같은 통계를 계산하도록 한 곳에서 만든다 — 설정이 갈라지면 학습/검증 결과를 본 분석과
+    비교할 수 없다.
+
+    getattr 기본값 경로: 이 필드가 없는 기존 args 네임스페이스(alerts.config의 build_args 등)도
+    그대로 동작한다. 새 옵션(deflate, barrier, barrier_sequential, barrier_economics)은 기본
+    꺼짐이라 켜지 않으면 출력 컬럼도 이전과 완전히 동일하다.
+    """
+    horizons = tuple(int(h) for h in args.horizons.split(","))
+    return dict(
+        horizons=horizons, max_curve_horizon=max(horizons),
+        entry_lag=args.entry_lag, entry_col=args.entry_col,
+        cost_bps=args.cost_bps, slippage_bps=slippage_arg,
+        newey_west=args.newey_west, drop_overlapping=args.drop_overlapping, fdr=args.fdr,
+        # 디플레이티드 샤프비율(backtest.deflated)
+        deflate=getattr(args, "deflate", False),
+        dsr_threshold=getattr(args, "dsr_threshold", 0.95),
+        min_events=getattr(args, "dsr_min_events", 20),
+        extra_trials=getattr(args, "dsr_extra_trials", 0),
+        # 트리플 배리어(backtest.triple_barrier). 기본 False면 tb_* 컬럼이 아예 안 생긴다.
+        barrier=getattr(args, "barrier", False),
+        pt_mult=getattr(args, "barrier_pt_mult", 2.0),
+        sl_mult=getattr(args, "barrier_sl_mult", 1.0),
+        vol_span=getattr(args, "barrier_vol_span", 20),
+        use_intrabar=getattr(args, "barrier_intrabar", True),
+        # 배리어 통계의 겹침 제거(순차 거래)와 경제적 유의성 컬럼. 기본 꺼짐.
+        barrier_sequential=getattr(args, "barrier_sequential", False),
+        barrier_economics=getattr(args, "barrier_economics", False),
+    )
+
+
 def run(df: pd.DataFrame, args) -> tuple[pd.DataFrame, dict, dict, "float | pd.Series"]:
     dfs_by_indicator = {
         "institutional_displacement": institutional_displacement.compute(
@@ -137,27 +171,7 @@ def run(df: pd.DataFrame, args) -> tuple[pd.DataFrame, dict, dict, "float | pd.S
         slippage_arg = args.slippage_bps
 
     horizons = tuple(int(h) for h in args.horizons.split(","))
-    summary, results = compare_all(dfs_by_indicator, horizons=horizons,
-                                    max_curve_horizon=max(horizons),
-                                    entry_lag=args.entry_lag, entry_col=args.entry_col,
-                                    cost_bps=args.cost_bps, slippage_bps=slippage_arg,
-                                    newey_west=args.newey_west, drop_overlapping=args.drop_overlapping,
-                                    fdr=args.fdr,
-                                    # 디플레이티드 샤프비율(backtest.deflated). getattr 기본값
-                                    # 경로라 이 필드가 없는 기존 args 네임스페이스(alerts.config의
-                                    # build_args 등)도 그대로 동작한다 — 기본 False이므로
-                                    # 켜지 않으면 출력 컬럼도 이전과 완전히 동일하다.
-                                    deflate=getattr(args, "deflate", False),
-                                    dsr_threshold=getattr(args, "dsr_threshold", 0.95),
-                                    min_events=getattr(args, "dsr_min_events", 20),
-                                    extra_trials=getattr(args, "dsr_extra_trials", 0),
-                                    # 트리플 배리어(backtest.triple_barrier). 같은 getattr
-                                    # 하위호환 경로. 기본 False면 tb_* 컬럼이 아예 안 생긴다.
-                                    barrier=getattr(args, "barrier", False),
-                                    pt_mult=getattr(args, "barrier_pt_mult", 2.0),
-                                    sl_mult=getattr(args, "barrier_sl_mult", 1.0),
-                                    vol_span=getattr(args, "barrier_vol_span", 20),
-                                    use_intrabar=getattr(args, "barrier_intrabar", True))
+    summary, results = compare_all(dfs_by_indicator, **build_compare_kwargs(args, slippage_arg))
     if args.entry_lag > 0 or args.cost_bps > 0 or args.slippage_bps > 0 or args.dynamic_slippage:
         slip_desc = "동적(Amihud 기반, 위 로그 참고)" if args.dynamic_slippage else f"{args.slippage_bps}bp(고정)"
         print(f"[체결 가정] entry_lag={args.entry_lag}봉 "
@@ -271,6 +285,53 @@ def print_ranking(summary: pd.DataFrame, horizon: int, fdr: float):
           f" 못할 수 있으니, 여러 조합을 비교할 때는 이 컬럼을 우선 참고하세요.")
 
 
+def run_extended_studies(dfs_by_indicator: dict, args, slippage_arg, out_dir: Path, judge_horizon: int):
+    """
+    --oos-train-end / --regime 로 요청된 표본 외 검증과 국면별 검증을 실행하고 출력·저장한다.
+    둘 다 꺼져 있으면 아무것도 하지 않는다(기존 동작 보존). 계산은 backtest.oos / backtest.regime에
+    있고 여기는 인자 연결과 출력만 한다(얇은 껍데기 원칙).
+    """
+    if not (getattr(args, "oos_train_end", None) or getattr(args, "regime", False)):
+        return None
+    ck = build_compare_kwargs(args, slippage_arg)
+    out = {}
+
+    if args.oos_train_end:
+        from backtest.oos import oos_study, format_oos_report
+        ck_oos = dict(ck)
+        if not ck_oos["deflate"]:
+            print("\n[OOS] 신호 선택 규칙이 DSR을 쓰므로 이번 실행에서는 DSR을 자동으로 켭니다.")
+            ck_oos["deflate"] = True
+        if args.oos_require_barrier and not ck_oos["barrier"]:
+            print("[OOS] --oos-require-barrier라서 배리어 통계를 자동으로 켭니다.")
+            ck_oos["barrier"] = True
+        test_start = args.oos_test_start or str((pd.Timestamp(args.oos_train_end) + pd.Timedelta(days=1)).date())
+        res = oos_study(dfs_by_indicator, ck_oos, args.oos_train_end, test_start,
+                        judge_horizon=judge_horizon, warmup_bars=args.oos_warmup,
+                        min_test_n=args.oos_min_test_n, alpha=args.oos_alpha,
+                        require_barrier=args.oos_require_barrier)
+        print("\n" + format_oos_report(res))
+        res.summary_train.to_csv(out_dir / "oos_train_summary.csv", index=False, encoding="utf-8-sig")
+        res.summary_test.to_csv(out_dir / "oos_test_summary.csv", index=False, encoding="utf-8-sig")
+        res.selected.to_csv(out_dir / "oos_selected.csv", index=False, encoding="utf-8-sig")
+        print(f"[저장] {out_dir / 'oos_train_summary.csv'}, oos_test_summary.csv, oos_selected.csv")
+        out["oos"] = res
+
+    if args.regime:
+        from backtest.regime import classify_regime, regime_study, format_regime_report
+        # 분류에는 지표와 무관한 가격 열이 필요하다 — 어느 지표 df든 같은 OHLCV를 갖고 있다.
+        price_df = next(iter(dfs_by_indicator.values()))
+        regimes = classify_regime(price_df, ma_len=args.regime_ma_len, ret_len=args.regime_ret_len,
+                                  vol_len=args.regime_vol_len, z_thr=args.regime_z_thr)
+        rres = regime_study(dfs_by_indicator, regimes, ck)
+        print("\n" + format_regime_report(rres, judge_horizon, min_n=args.regime_min_n))
+        if not rres.summary.empty:
+            rres.summary.to_csv(out_dir / "regime_summary.csv", index=False, encoding="utf-8-sig")
+            print(f"[저장] {out_dir / 'regime_summary.csv'}")
+        out["regime"] = rres
+    return out
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--market", choices=["upbit", "krx"], required=True)
@@ -378,6 +439,43 @@ def main():
     p.add_argument("--barrier-no-intrabar", dest="barrier_intrabar", action="store_false",
                     help="--barrier일 때 봉 내부 고가/저가 대신 종가만으로 배리어 터치를 "
                          "판정한다(일봉 고저를 신뢰하기 어려울 때). 기본은 고저 사용")
+    p.add_argument("--barrier-sequential", dest="barrier_sequential", action="store_true",
+                    help="--barrier일 때 앞 거래가 청산되기 전에 진입하는 거래를 배리어 통계에서 뺀다"
+                         "(순차 거래). 겹치는 이벤트를 그대로 세면 표본이 부풀려 배리어 기반 DSR이 낙관적으로 "
+                         "나온다. 기본 꺼짐")
+    p.add_argument("--barrier-economics", dest="barrier_economics", action="store_true",
+                    help="--barrier일 때 경제적 유의성 컬럼(R 단위 기대값, 손익분기 승률, 비용 대비 배수)을 "
+                         "요약표에 추가한다. 승률만으로는 손익비가 비대칭인 전략을 평가할 수 없다. 기본 꺼짐")
+    p.add_argument("--oos-train-end", dest="oos_train_end", default=None,
+                    help="표본 외(OOS) 검증을 켠다. 학습 구간의 마지막 날(YYYY-MM-DD). 이 날까지의 이벤트로 "
+                         "신호를 고르고(BH+DSR 통과) 그 뒤 구간에서 유지되는지 확인한다. 학습 끝의 "
+                         "(최대 보유기간+진입지연)봉은 퍼지한다. 선택 규칙이 DSR을 쓰므로 자동으로 DSR을 켠다. "
+                         "기본 None(꺼짐)")
+    p.add_argument("--oos-test-start", dest="oos_test_start", default=None,
+                    help="검증 구간 첫 날(YYYY-MM-DD). 기본은 --oos-train-end 다음 날")
+    p.add_argument("--oos-warmup", dest="oos_warmup", type=int, default=60,
+                    help="OOS: 지표가 안정되기 전 학습 초기 몇 봉의 이벤트를 뺄지. 기본 60")
+    p.add_argument("--oos-min-test-n", dest="oos_min_test_n", type=int, default=10,
+                    help="OOS: 검증 구간에서 판정하려면 필요한 최소 이벤트 수. 기본 10(미만이면 판정불가)")
+    p.add_argument("--oos-alpha", dest="oos_alpha", type=float, default=0.05,
+                    help="OOS: 검증 구간 유의수준. 선택된 신호 수 k로 나눠(Bonferroni) 단측 p와 비교한다. 기본 0.05")
+    p.add_argument("--oos-require-barrier", dest="oos_require_barrier", action="store_true",
+                    help="OOS: 학습 선택 조건에 배리어 기반 DSR 통과도 요구한다(손절을 걸고도 통과한 신호만). "
+                         "자동으로 --barrier를 켠다. 기본 꺼짐")
+    p.add_argument("--regime", dest="regime", action="store_true",
+                    help="시장 국면(상승/하락/횡보, 종목 자체 가격 기준)별로 나눠 신호 성과를 검증한다. "
+                         "국면 전체에 걸친 BH 재보정과 국면 간 부호 일관성을 함께 보여준다. 기본 꺼짐")
+    p.add_argument("--regime-ma-len", dest="regime_ma_len", type=int, default=200,
+                    help="국면 분류: 추세선(이동평균) 길이. 기본 200봉. 앞의 이 봉수만큼은 분류 불가")
+    p.add_argument("--regime-ret-len", dest="regime_ret_len", type=int, default=60,
+                    help="국면 분류: 최근 수익률 계산 구간. 기본 60봉")
+    p.add_argument("--regime-vol-len", dest="regime_vol_len", type=int, default=60,
+                    help="국면 분류: 변동성 계산 구간. 기본 60봉")
+    p.add_argument("--regime-z-thr", dest="regime_z_thr", type=float, default=0.5,
+                    help="국면 분류: 최근 수익률의 방향성(변동성 대비) 임계값. 기본 0.5 — 관행적 값이며 "
+                         "최적화한 값이 아니므로 바꿔가며 결과가 민감한지 확인할 것")
+    p.add_argument("--regime-min-n", dest="regime_min_n", type=int, default=5,
+                    help="국면 일관성 판단에 쓸 국면별 최소 관측 수. 기본 5")
     p.add_argument("--fdr", dest="fdr", type=float, default=0.10,
                     help="다중 검정 보정(Benjamini-Hochberg) 목표 false discovery rate. "
                          "이번 실행에서 검증하는 전체 신호x방향x보유기간 조합을 한꺼번에 놓고 보정한다. "
@@ -449,6 +547,23 @@ def main():
     print_ranking(summary, main_horizon, args.fdr)
 
     plot_curves(results, out_dir / "event_curves.png")
+
+    if "tb_expectancy_r" in summary.columns:
+        # 경제적 유의성(--barrier-economics): 통계적으로 유의한 것과 실제로 벌 만한 것은 다르다.
+        sub = summary[summary["horizon"] == main_horizon].dropna(subset=["tb_expectancy_r"])
+        if not sub.empty:
+            print(f"\n=== 보유기간 {main_horizon}봉 경제적 유의성 (손절 반영 거래 기준, 비용 차감 후) ===")
+            ecols = ["signal", "direction", "tb_n", "tb_win_rate_pct", "tb_breakeven_wr_pct",
+                     "tb_wr_edge_pp", "tb_payoff_ratio", "tb_expectancy_r", "tb_cost_multiple"]
+            if "tb_significant_dsr" in sub.columns:
+                ecols.append("tb_significant_dsr")
+            with pd.option_context("display.float_format", "{:.2f}".format):
+                print(sub.sort_values("tb_expectancy_r", ascending=False)[ecols].to_string(index=False))
+            print("해석: 기대값 +0.2R은 거래당 손절폭의 20%를 번다는 뜻입니다. 실제 승률이 손익분기 승률보다 "
+                  "높아야(wr_edge > 0) 기대값이 양수이고, 비용 대비 배수가 1 근처면 슬리피지 가정이 조금만 "
+                  "틀려도 사라지는 수준입니다.")
+
+    run_extended_studies(dfs_by_indicator, args, slippage_arg, out_dir, main_horizon)
 
     judgment = run_judgment(dfs_by_indicator, summary, args, judge_horizon=main_horizon,
                              slippage_bps=slippage_arg)

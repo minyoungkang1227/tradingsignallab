@@ -319,7 +319,8 @@ def compare_all(dfs_by_indicator: dict[str, pd.DataFrame], horizons=(1, 3, 5, 10
                  extra_trials: int = 0, min_events: int = 20,
                  sr_std_method: str = "theoretical",
                  barrier: bool = False, pt_mult: float = 2.0, sl_mult: float = 1.0,
-                 vol_span: int = 20, use_intrabar: bool = True
+                 vol_span: int = 20, use_intrabar: bool = True,
+                 barrier_sequential: bool = False, barrier_economics: bool = False
                  ) -> tuple[pd.DataFrame, dict[str, EventStudyResult]]:
     """
     dfs_by_indicator: {"institutional_displacement": df1, "delta_trading": df2, ...}
@@ -400,6 +401,12 @@ def compare_all(dfs_by_indicator: dict[str, pd.DataFrame], horizons=(1, 3, 5, 10
         (기본 2.0 / 1.0 = 1시그마 손절, 2시그마 익절, 손익비 2:1).
     vol_span: 배리어 스케일에 쓸 실현변동성의 지수가중 구간(기본 20봉).
     use_intrabar: True(기본)면 봉의 고가/저가로 배리어 터치를 판정한다.
+    barrier_sequential: True면 배리어 통계에서 앞 거래가 청산되기 전에 진입하는 거래를 뺀다
+        (triple_barrier.drop_overlapping_trades). 기본 False(이전 동작: 겹치는 이벤트도 전부
+        센다). drop_overlapping은 고정 보유기간 집계에만 적용되고 배리어 집계에는 적용되지
+        않으므로, 배리어 기반 DSR(tb_deflated_sr)이 독립 가정을 지키려면 이것을 켜야 한다.
+    barrier_economics: True면 배리어 요약에 경제적 유의성 컬럼(tb_expectancy_r, tb_payoff_ratio,
+        tb_breakeven_wr_pct, tb_wr_edge_pp, tb_cost_multiple)을 덧붙인다. 기본 False.
 
     [DSR 적용 시 주의 — 겹치는 이벤트]
     DSR은 관측치가 서로 독립이라고 가정한다. drop_overlapping=False면 보유기간이
@@ -454,13 +461,16 @@ def compare_all(dfs_by_indicator: dict[str, pd.DataFrame], horizons=(1, 3, 5, 10
             dfs_by_indicator, SIGNAL_SPECS, horizons=horizons,
             pt_mult=pt_mult, sl_mult=sl_mult, vol_span=vol_span,
             entry_lag=entry_lag, entry_col=entry_col, cost_bps=cost_bps,
-            slippage_bps=slippage_bps, use_intrabar=use_intrabar)
+            slippage_bps=slippage_bps, use_intrabar=use_intrabar,
+            sequential=barrier_sequential, economics=barrier_economics)
         # left merge — 요약표의 행 구성은 그대로 두고 배리어 컬럼만 덧붙인다.
         # 배리어 쪽에만 있는 조합(이벤트는 있는데 고정보유기간 집계가 비었던 경우)은
         # 버려지고, 반대로 배리어 쪽에 없는 조합은 tb_* 가 NaN으로 남는다.
         summary = summary.merge(tb, on=["signal", "direction", "horizon"], how="left")
         summary.attrs["barrier_pt_mult"] = pt_mult
         summary.attrs["barrier_sl_mult"] = sl_mult
+        summary.attrs["barrier_sequential"] = barrier_sequential
+        summary.attrs["barrier_economics"] = barrier_economics
 
     if deflate:
         from backtest.deflated import (

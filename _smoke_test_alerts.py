@@ -222,4 +222,27 @@ assert len(msgs) == 1
 assert "손절 반영 과거실적" not in msgs[0], msgs[0]
 print("[PASS] 17) tb_* 컬럼이 없으면 해당 줄만 생략, 알림 자체는 정상(하위호환)")
 
+# --- 경제성 줄(정보용): 컬럼이 있으면 표시, 없으면 생략, 게이트로는 작동하지 않음 ----
+TB_ECON = {**TB_GOOD, "tb_win_rate_pct": 52.0, "tb_breakeven_wr_pct": 38.0,
+           "tb_expectancy_r": 0.31, "tb_cost_multiple": 3.4}
+_state_box["last_date"] = pd.Timestamp("2024-05-06")
+rb.run = make_fake_run(True, bh_significant=True, dsr_significant=True, tb=TB_ECON)
+msgs = cs.check_one(krx_item, {})
+assert len(msgs) == 1
+assert "경제성" in msgs[0] and "실제 승률 52%" in msgs[0] and "손익분기 승률 38%" in msgs[0], msgs[0]
+assert "+0.31R" in msgs[0] and "비용 대비 3.4배" in msgs[0], msgs[0]
+print("[PASS] 18) 경제성 줄 표시: 승률 52% vs 손익분기 38%, +0.31R, 비용 3.4배")
+
+# 기대값이 음수여도 알림은 그대로 나가고 숫자만 노출(게이트 아님)
+TB_ECON_BAD = {**TB_ECON, "tb_win_rate_pct": 30.0, "tb_expectancy_r": -0.12, "tb_cost_multiple": -0.8}
+_state_box["last_date"] = pd.Timestamp("2024-05-07")
+rb.run = make_fake_run(True, bh_significant=True, dsr_significant=True, tb=TB_ECON_BAD)
+msgs = cs.check_one(krx_item, {})
+assert len(msgs) == 1 and "-0.12R" in msgs[0], msgs
+print("[PASS] 19) 기대값이 음수여도 알림은 발송되고 숫자가 노출됨(경제성은 게이트 아님)")
+
+# alerts 기본값: 순차 거래·경제성 계산 켜짐
+assert DEFAULTS["barrier_sequential"] is True and DEFAULTS["barrier_economics"] is True
+print("[PASS] 20) alerts 기본값에 barrier_sequential/barrier_economics 켜짐")
+
 print("\n모든 스모크테스트 통과.")

@@ -144,6 +144,15 @@ def check_one(item: dict, state: dict) -> list[str]:
                     f"최대 {judge_horizon}봉): {int(r['tb_n'])}건 중 "
                     f"익절 {r['tb_pt_rate']:.0%}·손절 {r['tb_sl_rate']:.0%}, "
                     f"평균 {r['tb_mean_ret_pct']:+.2f}%, 평균보유 {r['tb_avg_bars']:.1f}봉\n")
+                # 경제적 유의성(정보용): 익절:손절이 비대칭이라 승률만으론 좋고 나쁨을 알 수 없다.
+                # 실제 승률이 손익분기 승률보다 높아야 기대값이 양수다. 게이트로는 쓰지 않는다.
+                if "tb_expectancy_r" in tb_row.columns and pd.notna(r.get("tb_expectancy_r")):
+                    cm = r.get("tb_cost_multiple")
+                    cm_txt = f", 비용 대비 {cm:.1f}배" if pd.notna(cm) else ""
+                    barrier_line += (
+                        f"- 경제성(과거, 비용 차감 후): 실제 승률 {r['tb_win_rate_pct']:.0f}% vs "
+                        f"손익분기 승률 {r['tb_breakeven_wr_pct']:.0f}%, "
+                        f"거래당 기대값 {r['tb_expectancy_r']:+.2f}R(1R=손절폭){cm_txt}\n")
 
         direction_kr = "상승(롱)" if direction == 1 else "하락(숏)"
         if require_significance:

@@ -240,6 +240,35 @@ def triple_barrier_returns(df: pd.DataFrame, event_idx: pd.Index, direction: int
     return out
 
 
+def drop_overlapping_trades(tb: pd.DataFrame) -> pd.DataFrame:
+    """
+    시간 순서대로 훑으며 "앞 거래가 청산된 뒤에 진입하는 거래"만 남긴다(순차 거래).
+
+    트리플배리어 통계는 이벤트마다 독립적인 거래를 가정하고 평균·표준편차·DSR을
+    계산한다. 그런데 신호가 연달아 뜨면 앞 거래가 아직 열려 있는 동안 다음 거래가
+    시작돼 같은 가격 구간이 두 번 이상 세어진다 — 관측치가 독립이 아니므로 표본 수
+    n이 실질보다 부풀려지고 t값·DSR이 낙관적으로 나온다(engine.drop_overlapping이
+    고정 보유기간 쪽에서 막는 것과 같은 문제). 실제로도 포지션 하나를 들고 있는 동안
+    같은 방향 신호가 또 떴다고 물타기하지 않는 운용이 일반적이라 이쪽이 현실적이다.
+
+    청산 봉과 같은 봉에 진입하는 것도 겹침으로 본다(시가 진입·종가 청산이면 시간상
+    같은 봉 안에서 포지션 두 개가 동시에 열리는 셈이므로) — 진입일이 직전 채택 거래의
+    청산일보다 '엄격히 뒤'여야 남긴다.
+
+    tb: triple_barrier_returns()의 반환값(열: entry_date, exit_date 필요).
+    """
+    if tb is None or len(tb) <= 1:
+        return tb
+    order = tb.sort_values("entry_date", kind="stable")
+    keep = []
+    last_exit = None
+    for pos, (entry, exit_) in enumerate(zip(order["entry_date"], order["exit_date"])):
+        if last_exit is None or entry > last_exit:
+            keep.append(pos)
+            last_exit = exit_
+    return order.iloc[keep]
+
+
 def barrier_summary(tb: pd.DataFrame) -> dict:
     """
     triple_barrier_returns() 결과를 한 줄 요약으로 압축한다.
@@ -288,7 +317,8 @@ def barrier_study(dfs_by_indicator: dict, signal_specs, horizons=(1, 3, 5, 10, 2
                    pt_mult: float = 2.0, sl_mult: float = 1.0, vol_span: int = 20,
                    entry_lag: int = 0, entry_col: str | None = None,
                    cost_bps: float = 0.0, slippage_bps: float | pd.Series = 0.0,
-                   use_intrabar: bool = True) -> pd.DataFrame:
+                   use_intrabar: bool = True, sequential: bool = False,
+                   economics: bool = False) -> pd.DataFrame:
     """
     SIGNAL_SPECS의 모든 (신호, 방향)에 대해, 각 보유기간을 "시간 배리어"로 삼아
     손절/익절을 걸고 매매했을 때의 실현 수익률을 집계한다.
@@ -310,12 +340,27 @@ def barrier_study(dfs_by_indicator: dict, signal_specs, horizons=(1, 3, 5, 10, 2
     pt_mult / sl_mult / vol_span / entry_lag / entry_col / cost_bps /
     slippage_bps / use_intrabar: triple_barrier_returns()와 동일한 의미.
 
+    sequential: True면 앞 거래가 청산된 뒤에 진입하는 거래만 집계한다(drop_overlapping_trades).
+        기본 False(이전 동작과 동일 — 겹치는 이벤트를 모두 센다). 배리어 기반 DSR의 독립
+        가정을 지키려면 켜야 한다.
+    economics: True면 경제적 유의성 컬럼(backtest.economics)을 덧붙인다. 기본 False.
+        tb_expectancy_r(R 단위 기대값), tb_payoff_ratio(평균이익/평균손실),
+        tb_breakeven_wr_pct(손익분기 승률), tb_wr_edge_pp(실제 승률 - 손익분기, %p),
+        tb_cost_multiple(평균 순수익 / 왕복비용 — 비용이 0이면 NaN)
+
     반환 DataFrame 컬럼:
         signal, direction, horizon, tb_n, tb_mean_ret_pct, tb_win_rate_pct,
         tb_sharpe, tb_t_stat, tb_skew, tb_kurt, tb_pt_rate, tb_sl_rate,
-        tb_time_rate, tb_avg_bars
+        tb_time_rate, tb_avg_bars  (+ economics=True면 위 5개 컬럼)
     이벤트가 하나도 없는 조합은 행 자체를 만들지 않는다.
     """
+    if economics:
+        from backtest.economics import economic_summary
+        # 왕복 비용+슬리피지(소수). 슬리피지가 Series면 평균을 쓴다(거래별 값을 따로
+        # 주면 지표가 거래마다 달라져 해석이 어려워지므로 근사치로 충분한 요약용).
+        slip_mean = (float(slippage_bps.mean()) if isinstance(slippage_bps, pd.Series)
+                     else float(slippage_bps))
+        round_trip_cost = (float(cost_bps) + slip_mean) / 10000.0
     rows = []
     for indicator_key, event_col, direction, label in signal_specs:
         df = dfs_by_indicator.get(indicator_key)
@@ -336,9 +381,21 @@ def barrier_study(dfs_by_indicator: dict, signal_specs, horizons=(1, 3, 5, 10, 2
                 df, event_idx, direction=direction, pt_mult=pt_mult, sl_mult=sl_mult,
                 max_horizon=h, vol=vol, entry_lag=entry_lag, entry_col=entry_col,
                 cost_bps=cost_bps, slippage_bps=slippage_bps, use_intrabar=use_intrabar)
+            if sequential:
+                tb = drop_overlapping_trades(tb)
             s = barrier_summary(tb)
             if s["n"] == 0:
                 continue
+            row_econ = {}
+            if economics:
+                e = economic_summary(tb, pt_mult, sl_mult, round_trip_cost)
+                row_econ = {
+                    "tb_expectancy_r": e["expectancy_r"],
+                    "tb_payoff_ratio": e["payoff_ratio"],
+                    "tb_breakeven_wr_pct": e["breakeven_wr"] * 100 if pd.notna(e["breakeven_wr"]) else np.nan,
+                    "tb_wr_edge_pp": e["wr_edge"] * 100 if pd.notna(e["wr_edge"]) else np.nan,
+                    "tb_cost_multiple": e["net_to_cost"],
+                }
             rows.append({
                 "signal": label,
                 "direction": "LONG" if direction == 1 else "SHORT",
@@ -354,9 +411,13 @@ def barrier_study(dfs_by_indicator: dict, signal_specs, horizons=(1, 3, 5, 10, 2
                 "tb_sl_rate": s["sl_rate"],
                 "tb_time_rate": s["time_rate"],
                 "tb_avg_bars": s["avg_bars"],
+                **row_econ,
             })
 
     cols = ["signal", "direction", "horizon", "tb_n", "tb_mean_ret_pct",
             "tb_win_rate_pct", "tb_sharpe", "tb_t_stat", "tb_skew", "tb_kurt",
             "tb_pt_rate", "tb_sl_rate", "tb_time_rate", "tb_avg_bars"]
+    if economics:
+        cols += ["tb_expectancy_r", "tb_payoff_ratio", "tb_breakeven_wr_pct",
+                 "tb_wr_edge_pp", "tb_cost_multiple"]
     return pd.DataFrame(rows, columns=cols)

@@ -66,6 +66,9 @@ DEFAULTS = dict(
     # 알리도록 게이트를 추가할 수 있다(기본 꺼짐).
     barrier=True, barrier_pt_mult=2.0, barrier_sl_mult=1.0,
     barrier_vol_span=20, barrier_intrabar=True,
+    # 순차 거래(앞 거래 청산 후에만 진입)로 겹침을 없애고, 경제적 유의성(R 기대값·손익분기
+    # 승률·비용 배수)을 계산해 알림에 정보로 싣는다. 둘 다 알림 게이트가 아니다.
+    barrier_sequential=True, barrier_economics=True,
     require_barrier_profit=False,
 )
 
