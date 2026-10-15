@@ -473,46 +473,22 @@ def compare_all(dfs_by_indicator: dict[str, pd.DataFrame], horizons=(1, 3, 5, 10
         summary.attrs["barrier_economics"] = barrier_economics
 
     if deflate:
-        from backtest.deflated import (
-            expected_max_sharpe, null_sharpe_dispersion, probabilistic_sharpe_ratio,
-            sharpe_dispersion,
-        )
+        # 절차 자체는 backtest/deflated.py::dsr_for_family()에 있다. 여기 클로저로
+        # 두면 compare_all을 거치지 않는 경로(advisor의 유니버스 풀링 등)가 자기
+        # 나름의 DSR을 따로 구현하게 되고, 그러면 같은 신호에 진입점마다 다른
+        # 기준선이 적용되어 "DSR 통과"라는 말의 의미가 갈린다.
+        from backtest.deflated import dsr_for_family
 
         def _dsr_block(sharpes, n_obs_arr, skews, kurts):
             """한 벌의 (샤프, 표본수, 왜도, 첨도)에 대해 DSR을 계산한다.
             고정 보유기간 수익률과 배리어 수익률에 똑같이 적용하기 위해 함수로
-            뺐다 — 두 경로가 다른 기준선을 쓰면 비교가 성립하지 않으므로,
+            감쌌다 — 두 경로가 다른 기준선을 쓰면 비교가 성립하지 않으므로,
             각자 자기 분포에서 기준선을 따로 구하되 절차는 동일해야 한다."""
-            sharpes = np.asarray(sharpes, dtype=float)
-            n_obs_arr = np.asarray(n_obs_arr, dtype=float)
-
-            # 표본이 너무 적은 조합은 애초에 추정 대상에서 뺀다. 포함시키면
-            # sr_std가 오염되어 기준선 자체가 망가진다(min_events 설명 참조).
-            eligible = np.isfinite(sharpes) & (n_obs_arr >= min_events)
-
-            # 시도 횟수 = 판정 가능한 검정 수 + 바깥에서 이미 써버린 횟수
-            n_trials = int(eligible.sum()) + max(0, int(extra_trials))
-
-            if sr_std_method == "observed":
-                sr_std = sharpe_dispersion(sharpes[eligible])
-            elif sr_std_method == "theoretical":
-                sr_std = null_sharpe_dispersion(n_obs_arr[eligible])
-            else:
-                raise ValueError(
-                    f"sr_std_method는 'theoretical' 또는 'observed'여야 합니다: "
-                    f"{sr_std_method!r}")
-
-            bench = expected_max_sharpe(n_trials, sr_std)
-
-            vals = []
-            for ok, sr, n_obs, skew, kurt in zip(eligible, sharpes, n_obs_arr,
-                                                  skews, kurts):
-                if not ok or not np.isfinite(skew) or not np.isfinite(kurt):
-                    vals.append(np.nan)
-                    continue
-                vals.append(probabilistic_sharpe_ratio(
-                    float(sr), bench, int(n_obs), skew=float(skew), kurt=float(kurt)))
-            return vals, n_trials, sr_std, bench, int(eligible.sum())
+            r = dsr_for_family(sharpes, n_obs_arr, skews, kurts,
+                                min_events=min_events, extra_trials=extra_trials,
+                                sr_std_method=sr_std_method)
+            return (r["values"], r["n_trials"], r["sr_std"], r["benchmark"],
+                    r["n_eligible"])
 
         # --- 고정 보유기간 수익률 기준 DSR ---
         dsr_vals, n_trials, sr_std, benchmark, n_eligible = _dsr_block(

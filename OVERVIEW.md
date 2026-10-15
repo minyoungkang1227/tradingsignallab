@@ -71,8 +71,8 @@ Pine Script 지표(기관 변동 캔들, Delta Trading, Big Sales, Ultimate RSI,
       → 누적수익률, MDD, 거래 수, 상한에 걸려 줄거나 건너뛴 횟수 (합성이면 성과 아님)
       ▼
 [10] 알림·대시보드 (alerts/, app.py)
-      GitHub Actions(평일 16:10 KST) → 신호 감지 → 텔레그램. 국내주식은 BH → DSR 통과분만,
-      업비트 코인은 즉시 알림
+      GitHub Actions(평일 16:10 KST) → 신호 감지 → 텔레그램. 국내주식은 공통 판정
+      게이트(decision/gate.py) 통과분만, 업비트 코인은 즉시 알림(watchlist 설정)
 ```
 
 **--market upbit 자동 분기**: 가상자산은 4~5단계(KRX 유니버스 기반 SMB/HML/WML
@@ -586,9 +586,56 @@ python run_advisor.py --mode query --market krx --symbol 005930 \
 ## 13. 알림·대시보드 (`alerts/`, `app.py`)
 
 GitHub Actions가 평일 16:10 KST(cron `10 7 * * 1-5` UTC)에 `alerts/check_signals.py`를 실행해 감시리스트
-(`alerts/watchlist.json`)의 신호를 확인하고 텔레그램으로 보냅니다. 국내주식은 BH → DSR을 통과한 신호만,
-업비트 코인은 즉시 알림입니다. 상태는 `alerts/state.json`에 저장하고 `alerts/github_sync.py`가 저장소와
+(`alerts/watchlist.json`)의 신호를 확인하고 텔레그램으로 보냅니다. 국내주식은 공통 판정
+게이트(13-1절)를 통과한 신호만, 업비트 코인은 `require_significance`가 기본 꺼짐이라 즉시 알림입니다.
 동기화합니다. 토큰 등 인증정보는 GitHub Secrets에만 두며, 채팅이나 코드에 노출되면 즉시 재발급합니다.
+
+### 13-1. 공통 판정 게이트 (`decision/gate.py`)
+
+"이 신호를 믿을 것인가"에 세 진입점이 서로 다른 답을 내고 있었습니다.
+
+| 진입점 | 예전 기준 |
+|---|---|
+| `decision/rule_based.py` | 표본 ≥ 10, \|t\| ≥ 3.0, BH, 알파 \|t\| ≥ 3.0, 부호 일치 |
+| `alerts/check_signals.py` | BH, DSR (t 임계값도 표본수 기준도 없음) |
+| `advisor/evaluator.py` | \|t\| ≥ 임계값 (BH도 DSR도 알파도 없음) |
+
+세 축(t 임계값·다중검정·알파) 전부에서 엇갈려서 누가 더 엄격한지 줄 세울 수조차 없었습니다.
+예를 들어 \|t\|=2.5이고 BH·DSR을 통과한 신호는 규칙판정에서는 기각인데 알림은 발송됐습니다.
+특히 매수·보유·매도를 직접 추천하는 어드바이저가 가장 느슨한 기준을 쓰면서, 하필 유니버스를
+스캔해 종목과 신호를 동시에 여럿 보는 구조라 다중검정 문제가 가장 큰 자리에서 보정이 가장
+약했습니다.
+
+지금은 세 진입점이 모두 `decision/gate.py::evaluate_gate()`를 부릅니다. 게이트는 순서 있는
+다섯 층으로 되어 있고, 각 층은 통과·실패·해당없음·판정불가 중 하나를 냅니다.
+
+| 층 | 기준 | 비고 |
+|---|---|---|
+| 표본수 | `n_events` ≥ 10 | 미달이면 보류 |
+| 개별 t-stat | \|t\| ≥ 3.0 | Harvey, Liu & Zhu(2016) |
+| BH 다중검정 | `significant_bh` | 묶음 차원 FDR 0.10 |
+| DSR | `significant_dsr` | 비정규성 + 선택편의 |
+| 팩터 알파 | \|alpha_t\| ≥ 3.0, 원 수익률과 부호 일치 | 팩터 데이터가 있을 때만 |
+
+판정은 **순서상 처음 걸린 층**이 결정합니다. 실패면 기각, 판정불가면 보류, 끝까지 걸리는
+층이 없으면 채택입니다. 모아서 보는 방식(실패 우선)이 아니라 순서 우선인 이유는, 표본이
+모자란 신호에 "알파가 유의하지 않다"고 말해 봐야 조치로 이어지지 않기 때문입니다.
+
+**해당없음과 판정불가를 구분하는 게 핵심입니다.** 가상자산은 KRX 사이즈·가치·모멘텀 팩터
+정의가 적용되지 않아 알파 층이 구조적으로 해당없음이고, 이건 흠이 아닙니다. 반면 국내주식인데
+팩터 표본이 모자라 알파를 못 구한 건 판정불가이고 보류 사유입니다. 둘을 뭉개면 코인
+어드바이저가 영원히 보류로 떨어지거나, 반대로 검증하지 못한 항목을 통과로 흘려보냅니다.
+같은 이유로 BH·DSR 결과가 **없으면** 통과가 아니라 판정불가입니다 — 검사하지 않은 것을
+통과로 흘려보내는 게 애초에 이 게이트를 만든 이유였던 결함입니다.
+
+**바뀐 동작**: 알림은 이제 표본수와 \|t\| ≥ 3.0도 요구하므로 예전보다 보수적입니다.
+`significant_dsr` 컬럼이 없으면 예전에는 BH만으로 통과시켰지만 지금은 알림을 보내지 않습니다.
+어드바이저는 BH·DSR을 적용하게 되어 추천 종목이 줄어듭니다. 업비트 알림의
+`require_significance` 기본 꺼짐(원시 이벤트 즉시 알림)은 게이트 기준이 아니라 감시리스트
+항목별 설정이라 그대로 두었습니다.
+
+게이트는 "통계적으로 진짜인가"만 봅니다. "그래서 손절 걸고 매매하면 벌 수 있나"는 다른
+질문이고 `backtest/economics.py`가 답합니다. 게이트 통과가 수익을 뜻하지 않습니다.
 
 ### 성과 리포트 표준 블록
 
@@ -669,7 +716,8 @@ alerts/              텔레그램 알림(check_signals, telegram, state, github_
 app.py               Streamlit 대시보드
 tools/gen_option_table.py  argparse에서 옵션·기본값 표 생성(17절)
 factors/kr_fama_french.py  SMB/HML/WML 팩터 구성
-decision/rule_based.py     규칙 기반 판단 레이어
+decision/gate.py           공통 판정 게이트 — 알림·어드바이저·규칙판정이 전부 여기를 쓴다
+decision/rule_based.py     규칙 기반 판단 레이어(게이트에 팩터 알파까지 요구하는 래퍼)
 research/param_search.py   IS/OOS 파라미터 탐색 (anchor search, plateau, 시도횟수
                      보정 임계값, 횡단면 풀링)
 advisor/             매수/보유/매도 어드바이저 (evaluator.py: 종목 평가·다수결,
@@ -707,6 +755,7 @@ README.md            프로젝트 소개, 할 수 있는 일/입증되지 않은
 | `_smoke_test_combo_filter.py` | 콤보 필터 점수·신호 |
 | `_smoke_test_report_common.py` | 표준 리포트 블록 항목·순서·라벨·비용 미반영 표기 |
 | `_smoke_test_stats.py` | 정규분포 꼬리확률 손계산 기준값, 항등식, 세 모듈이 단일 구현을 쓰는지 |
+| `_smoke_test_gate.py` | 공통 판정 게이트 층별 판정, 순서 우선 규칙, 해당없음/판정불가 구분, 세 진입점 일치 |
 | `_smoke_test_docs_sync.py` | OVERVIEW 옵션 대조표가 argparse 실제 정의와 일치하는지 |
 | `_smoke_test_execution_log.py` | 실행 로그 손계산, signal_id 결정성, 재실행 시 중복 없음 |
 | `_smoke_test_alerts.py`, `smoke_test_alerts.py`, `smoke_test_github_sync.py` | 알림 판정·상태 저장, GitHub 동기화(base64, 409 충돌), 네트워크 호출은 모킹 |

@@ -42,7 +42,8 @@ import pandas as pd
 
 from indicators import (institutional_displacement, delta_trading, big_sales,
                          ultimate_rsi, vp_box, momentum, liquidity, combo_filter)
-from backtest.engine import SIGNAL_SPECS, event_study
+from backtest.engine import SIGNAL_SPECS, compare_all
+from decision.gate import evaluate_gate
 
 MIN_OWN_EVENTS = 10
 DEFAULT_T_THRESHOLD = 3.0  # decision/rule_based.py와 동일 근거(Harvey, Liu & Zhu 2016)
@@ -111,17 +112,50 @@ def _compute_indicator_dfs(df: pd.DataFrame, cfg) -> dict[str, pd.DataFrame]:
     return dfs
 
 
-def _own_symbol_reliability(df: pd.DataFrame, event_col: str, direction: int, cfg) -> tuple[int, float, float]:
-    """그 종목 자신의 과거 이벤트만으로 (n_events, mean, t_stat)을 계산한다."""
-    res = event_study(df, event_col, direction=direction, horizons=(cfg.target_horizon,),
-                       max_curve_horizon=cfg.target_horizon,
-                       entry_lag=cfg.entry_lag, entry_col=cfg.entry_col,
-                       cost_bps=cfg.cost_bps, slippage_bps=cfg.slippage_bps)
-    row = res.table.loc[cfg.target_horizon]
-    n = int(row["n"]) if pd.notna(row["n"]) else 0
-    mean = float(row["mean"]) if pd.notna(row["mean"]) else float("nan")
-    t_stat = float(row["t_stat"]) if pd.notna(row["t_stat"]) else float("nan")
-    return n, mean, t_stat
+def own_symbol_summary(dfs: dict, cfg) -> pd.DataFrame:
+    """
+    한 종목의 신호 전부를 compare_all()로 '한 묶음'으로 평가한 요약표를 돌려준다.
+
+    [왜 신호별 event_study가 아니라 compare_all인가]
+    예전에는 신호마다 event_study()를 따로 불러 t-stat만 뽑고 |t| >= 임계값으로
+    검증 여부를 정했다. 그러면 "이 종목에서 12개 신호를 동시에 보고 있다"는
+    사실이 통계에 전혀 반영되지 않는다 — 전부 무의미해도 그중 몇 개는 우연히
+    유의하게 나온다. compare_all()은 묶음 차원에서 BH(FDR) 보정과 DSR을 계산해
+    주므로, 어드바이저도 알림·규칙판정과 같은 기준으로 거를 수 있게 된다.
+    """
+    summary, _ = compare_all(
+        dfs, horizons=(cfg.target_horizon,), max_curve_horizon=cfg.target_horizon,
+        entry_lag=cfg.entry_lag, entry_col=cfg.entry_col,
+        cost_bps=cfg.cost_bps, slippage_bps=cfg.slippage_bps,
+        newey_west=getattr(cfg, "newey_west", False),
+        drop_overlapping=getattr(cfg, "drop_overlapping", False),
+        fdr=getattr(cfg, "fdr", 0.10),
+        deflate=getattr(cfg, "deflate", True),
+        dsr_threshold=getattr(cfg, "dsr_threshold", 0.95),
+        min_events=getattr(cfg, "dsr_min_events", 20),
+        extra_trials=getattr(cfg, "dsr_extra_trials", 0),
+    )
+    return summary
+
+
+def _row_for(summary: pd.DataFrame, label: str, horizon: int):
+    """요약표에서 (신호, 보유기간) 한 행을 찾는다. 없으면 None."""
+    if summary is None or summary.empty:
+        return None
+    hit = summary[(summary["signal"] == label) & (summary["horizon"] == horizon)]
+    return None if hit.empty else hit.iloc[0]
+
+
+def _stats_from_row(row) -> tuple[int, float, float, object, object]:
+    """요약표 한 행에서 (n, mean, t_stat, bh, dsr)을 꺼낸다."""
+    if row is None:
+        return 0, float("nan"), float("nan"), None, None
+    n = int(row["n_events"]) if pd.notna(row.get("n_events")) else 0
+    mean = float(row["mean_return_pct"]) if pd.notna(row.get("mean_return_pct")) else float("nan")
+    t_stat = float(row["t_stat"]) if pd.notna(row.get("t_stat")) else float("nan")
+    bh = bool(row["significant_bh"]) if "significant_bh" in row.index and pd.notna(row["significant_bh"]) else None
+    dsr = bool(row["significant_dsr"]) if "significant_dsr" in row.index and pd.notna(row["significant_dsr"]) else None
+    return n, mean, t_stat, bh, dsr
 
 
 def evaluate_symbol(df: pd.DataFrame, symbol: str, cfg, pooled_stats: dict | None = None) -> SymbolVerdict:
@@ -142,6 +176,9 @@ def evaluate_symbol(df: pd.DataFrame, symbol: str, cfg, pooled_stats: dict | Non
     dfs = _compute_indicator_dfs(df, cfg)
     as_of = str(df.index[-1].date()) if len(df) else "N/A"
 
+    # 종목 자체 통계는 신호 전부를 한 묶음으로 평가해야 BH·DSR이 성립한다.
+    own_summary = own_symbol_summary(dfs, cfg)
+
     active: list[SignalEvidence] = []
     for indicator_key, event_col, direction, label in SIGNAL_SPECS:
         ind_df = dfs.get(indicator_key)
@@ -151,20 +188,37 @@ def evaluate_symbol(df: pd.DataFrame, symbol: str, cfg, pooled_stats: dict | Non
         if not is_active_today:
             continue
 
-        n_own, mean_own, t_own = _own_symbol_reliability(ind_df, event_col, direction, cfg)
+        n_own, mean_own, t_own, bh_own, dsr_own = _stats_from_row(
+            _row_for(own_summary, label, cfg.target_horizon))
 
         if n_own >= cfg.min_own_events:
             n, mean, t_stat, basis = n_own, mean_own, t_own, "own"
+            bh, dsr = bh_own, dsr_own
         elif pooled_stats and label in pooled_stats and pooled_stats[label].get("n", 0) > 0:
             p = pooled_stats[label]
             n, mean, t_stat, basis = p["n"], p["mean"], p["t_stat"], "pooled"
+            # 풀링 통계도 유니버스 전체를 한 묶음으로 보정한 결과를 같이 받는다.
+            bh, dsr = p.get("significant_bh"), p.get("significant_dsr")
         else:
             n, mean, t_stat, basis = n_own, mean_own, t_own, "미검증(표본부족)"
+            bh, dsr = bh_own, dsr_own
 
-        validated = basis in ("own", "pooled") and pd.notna(t_stat) and abs(t_stat) >= cfg.t_threshold
-        reason = (f"{'종목 자체' if basis == 'own' else '동일 신호유형 풀링' if basis == 'pooled' else '검증 불가'} "
-                  f"n={n} t={t_stat:.2f} (기준 |t|>={cfg.t_threshold})" if basis != "미검증(표본부족)"
-                  else f"종목 자체 이벤트 {n}개 < 최소 {cfg.min_own_events}개, 풀링 통계도 없음")
+        # [변경] 예전에는 |t| >= 임계값 하나로 validated를 정했다. 그러면 유니버스를
+        # 스캔하며 종목·신호를 동시에 여럿 보는 이 모듈이 하필 다중검정 보정을
+        # 전혀 하지 않는 상태가 된다. 이제 알림·규칙판정과 같은 공통 게이트를 쓴다.
+        # 팩터 알파는 이 경로에서 계산하지 않으므로 해당 없음으로 둔다.
+        gate = evaluate_gate(
+            n_events=n, t_stat=t_stat, bh_significant=bh, dsr_significant=dsr,
+            factor_available=False,
+            min_n_events=cfg.min_own_events, t_threshold=cfg.t_threshold,
+        )
+        validated = (basis in ("own", "pooled")) and gate["verdict"] == "채택"
+        if basis == "미검증(표본부족)":
+            reason = f"종목 자체 이벤트 {n}개 < 최소 {cfg.min_own_events}개, 풀링 통계도 없음"
+        else:
+            basis_kr = "종목 자체" if basis == "own" else "동일 신호유형 풀링"
+            reason = (f"{basis_kr} n={n} t={t_stat:.2f} -> {gate['verdict']}: "
+                      f"{gate['reasons'][0]}")
 
         active.append(SignalEvidence(label=label, direction=direction, active_today=True,
                                       validated=validated, basis=basis, n_events=n,

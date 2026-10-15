@@ -16,7 +16,11 @@ from __future__ import annotations
 
 import pandas as pd
 
-from backtest.engine import SIGNAL_SPECS, event_returns, cluster_robust_t_stat
+import numpy as np
+
+from backtest.engine import (SIGNAL_SPECS, benjamini_hochberg, cluster_robust_t_stat,
+                              event_returns, p_value_from_t)
+from backtest.deflated import dsr_for_family
 from research.param_search import pool_event_returns
 from advisor.evaluator import evaluate_symbol, _compute_indicator_dfs
 
@@ -50,10 +54,50 @@ def compute_pooled_stats(dfs_by_symbol: dict[str, pd.DataFrame], cfg) -> dict[st
 
         vals, cluster_ids = pool_event_returns(per_symbol)
         if len(vals) == 0:
-            pooled_stats[label] = dict(n=0, mean=float("nan"), t_stat=float("nan"))
+            pooled_stats[label] = dict(n=0, mean=float("nan"), t_stat=float("nan"),
+                                        sharpe=float("nan"), skew=float("nan"),
+                                        kurt=float("nan"))
             continue
         mean, t_stat = cluster_robust_t_stat(vals, cluster_ids)
-        pooled_stats[label] = dict(n=len(vals), mean=mean, t_stat=t_stat)
+        # DSR에 넘길 분포 정보. 공식은 engine.event_study()와 동일하게 맞춘다
+        # (원첨도, 정규분포=3) — 두 경로가 다른 정의를 쓰면 같은 기준선을 공유할 수 없다.
+        arr = np.asarray(vals, dtype=float)
+        std = float(arr.std(ddof=1)) if len(arr) > 1 else float("nan")
+        if len(arr) > 1 and std and std > 0:
+            z = (arr - float(arr.mean())) / std
+            skew, kurt = float(np.mean(z ** 3)), float(np.mean(z ** 4))
+            sharpe = float(mean) / std
+        else:
+            skew = kurt = sharpe = float("nan")
+        pooled_stats[label] = dict(n=len(vals), mean=mean, t_stat=t_stat,
+                                    sharpe=sharpe, skew=skew, kurt=kurt)
+
+    # --- 묶음 차원의 보정: BH(FDR)와 DSR -------------------------------------
+    # 유니버스 스캔은 신호 여러 개를 한 번에 본다. 개별 t-stat만 보면 전부
+    # 무의미해도 그중 일부는 우연히 유의하게 나온다. 여기서 보정해 두지 않으면
+    # evaluate_symbol()이 그걸 걸러낼 재료 자체를 못 받는다.
+    labels = [lab for lab, _ in sorted(((lab, i) for i, (_, _, _, lab)
+                                         in enumerate(SIGNAL_SPECS)), key=lambda x: x[1])]
+    p_values = [p_value_from_t(pooled_stats[lab]["t_stat"]) for lab in labels]
+    bh_flags = benjamini_hochberg(p_values, fdr=getattr(cfg, "fdr", 0.10))
+
+    dsr = dsr_for_family(
+        [pooled_stats[lab]["sharpe"] for lab in labels],
+        [pooled_stats[lab]["n"] for lab in labels],
+        [pooled_stats[lab]["skew"] for lab in labels],
+        [pooled_stats[lab]["kurt"] for lab in labels],
+        min_events=getattr(cfg, "dsr_min_events", 20),
+        extra_trials=getattr(cfg, "dsr_extra_trials", 0),
+        sr_std_method=getattr(cfg, "dsr_sr_std_method", "theoretical"),
+    )
+    dsr_threshold = getattr(cfg, "dsr_threshold", 0.95)
+    for lab, bh_ok, dsr_val in zip(labels, bh_flags, dsr["values"]):
+        pooled_stats[lab]["p_value"] = p_value_from_t(pooled_stats[lab]["t_stat"])
+        pooled_stats[lab]["deflated_sr"] = dsr_val
+        pooled_stats[lab]["significant_bh"] = bool(bh_ok)
+        # NaN(판정 불가)은 유의하지 않음으로 — compare_all()과 같은 처리.
+        pooled_stats[lab]["significant_dsr"] = bool(
+            (dsr_val if dsr_val == dsr_val else 0.0) >= dsr_threshold)
 
     return pooled_stats
 

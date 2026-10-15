@@ -310,3 +310,55 @@ def null_sharpe_dispersion(n_obs_list) -> float:
     if n_typ < 2:
         return float("nan")
     return 1.0 / math.sqrt(n_typ - 1.0)
+
+
+# ---------------------------------------------------------------------------
+# 한 "검정 묶음(family)"에 대한 DSR 일괄 계산
+# ---------------------------------------------------------------------------
+# [왜 여기로 뺐나]
+# 이 절차는 원래 engine.compare_all() 안의 클로저였다. 그런데 DSR의 기준선
+# (expected_max_sharpe)은 "이 묶음에서 몇 번 시도했는가"에서 나오므로, 묶음을
+# 다루는 쪽이면 누구든 같은 절차를 써야 한다 — advisor의 유니버스 풀링 통계처럼
+# compare_all을 거치지 않는 경로가 자기 나름의 DSR을 따로 구현하면, 같은 신호에
+# 진입점마다 다른 기준선이 적용되어 "통과했다"는 말의 의미가 갈린다.
+def dsr_for_family(sharpes, n_obs, skews, kurts, *, min_events: int = 20,
+                    extra_trials: int = 0, sr_std_method: str = "observed") -> dict:
+    """
+    sharpes, n_obs, skews, kurts: 같은 길이의 배열 — 한 번에 비교한 검정들의
+        거래당 샤프비율, 표본수, 왜도, 첨도.
+    min_events: 이 수보다 표본이 적은 검정은 기준선 추정에서 제외한다(포함시키면
+        추정치가 요동쳐 sr_std 자체가 오염된다). 제외된 검정의 DSR은 NaN.
+    extra_trials: 이 묶음 바깥에서 이미 써버린 시도 횟수(파라미터 탐색 등).
+    sr_std_method: "observed"(관측된 샤프 분산) 또는 "theoretical"(귀무분포 분산).
+
+    반환: dict(values, n_trials, sr_std, benchmark, n_eligible)
+        values는 입력과 같은 길이의 DSR 리스트(판정 불가는 NaN).
+    """
+    sharpes = np.asarray(sharpes, dtype=float)
+    n_obs_arr = np.asarray(n_obs, dtype=float)
+
+    eligible = np.isfinite(sharpes) & (n_obs_arr >= min_events)
+
+    # 시도 횟수 = 판정 가능한 검정 수 + 바깥에서 이미 써버린 횟수
+    n_trials = int(eligible.sum()) + max(0, int(extra_trials))
+
+    if sr_std_method == "observed":
+        sr_std = sharpe_dispersion(sharpes[eligible])
+    elif sr_std_method == "theoretical":
+        sr_std = null_sharpe_dispersion(n_obs_arr[eligible])
+    else:
+        raise ValueError(
+            f"sr_std_method는 'theoretical' 또는 'observed'여야 합니다: {sr_std_method!r}")
+
+    benchmark = expected_max_sharpe(n_trials, sr_std)
+
+    values = []
+    for ok, sr, n, skew, kurt in zip(eligible, sharpes, n_obs_arr, skews, kurts):
+        if not ok or not np.isfinite(skew) or not np.isfinite(kurt):
+            values.append(np.nan)
+            continue
+        values.append(probabilistic_sharpe_ratio(
+            float(sr), benchmark, int(n), skew=float(skew), kurt=float(kurt)))
+
+    return dict(values=values, n_trials=n_trials, sr_std=sr_std,
+                 benchmark=benchmark, n_eligible=int(eligible.sum()))

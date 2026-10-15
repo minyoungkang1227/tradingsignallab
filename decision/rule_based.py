@@ -49,7 +49,8 @@ import pandas as pd
 def judge_signal(n_events: int, raw_mean_return: float, raw_t_stat: float,
                   alpha: float, alpha_t_stat: float, r_squared: float,
                   min_n_events: int = 10, t_threshold: float = 3.0,
-                  bh_significant: bool | None = None) -> dict:
+                  bh_significant: bool | None = None,
+                  dsr_significant: bool | None = None) -> dict:
     """
     순수 판정 함수 — 이미 계산된 통계치만 받아서 규칙을 적용한다(직접 호출해도 되고,
     아래 judge_indicator()가 이벤트 스터디·팩터 회귀까지 한 번에 해서 이 함수에 넘겨준다).
@@ -66,59 +67,39 @@ def judge_signal(n_events: int, raw_mean_return: float, raw_t_stat: float,
               bh_significant)
     verdict은 "채택" / "보류" / "기각" 중 하나.
     """
-    reasons: list[str] = []
+    # 판정 규칙 자체는 decision/gate.py 한 곳에 있다. 이 함수는 그 게이트에
+    # "팩터 데이터가 있는 국내주식 경로"의 설정으로 질의하는 얇은 래퍼다.
+    # bh_significant=None이면 건너뛰는 기존 동작을 보존하려고 require_bh를
+    # None 여부로 정하고, DSR은 이 함수의 호출부가 아직 넘기지 않으므로
+    # 기본 None + require_dsr=False로 둔다(넘기면 그때부터 반영된다).
+    from decision.gate import evaluate_gate
 
-    if n_events < min_n_events:
-        verdict = "보류"
-        reasons.append(f"표본 수 부족 (n_events={n_events} < {min_n_events}) — 우연일 가능성을 배제할 수 없음")
-
-    elif raw_t_stat is None or (isinstance(raw_t_stat, float) and math.isnan(raw_t_stat)):
-        verdict = "보류"
-        reasons.append("원 신호의 t-stat을 계산할 수 없음 (수익률 데이터 부족)")
-
-    elif abs(raw_t_stat) < t_threshold:
-        verdict = "기각"
-        reasons.append(f"원 신호 자체가 통계적으로 유의하지 않음 (|t|={abs(raw_t_stat):.2f} < {t_threshold})")
-
-    elif bh_significant is False:
-        verdict = "기각"
-        reasons.append(
-            f"개별 t-stat(|t|={abs(raw_t_stat):.2f})은 유의했지만, 여러 신호를 동시에 비교한 "
-            f"Benjamini-Hochberg 다중검정 보정을 통과하지 못함 — 우연히 유의하게 나왔을 가능성(p-hacking)"
-        )
-
-    elif alpha_t_stat is None or (isinstance(alpha_t_stat, float) and math.isnan(alpha_t_stat)):
-        verdict = "보류"
-        reasons.append("팩터 회귀 표본 부족으로 알파 유의성을 검증할 수 없음")
-
-    elif abs(alpha_t_stat) < t_threshold:
-        verdict = "기각"
-        reasons.append(
-            f"원 신호는 유의했지만(|t|={abs(raw_t_stat):.2f}) 알파는 유의하지 않음"
-            f"(|alpha_t|={abs(alpha_t_stat):.2f}) — SMB/HML/WML 팩터 프리미엄의 재포장일 가능성"
-        )
-
-    elif (raw_mean_return > 0) != (alpha > 0):
-        verdict = "보류"
-        reasons.append(
-            f"원 평균수익률(부호 {'+' if raw_mean_return > 0 else '-'})과 "
-            f"알파(부호 {'+' if alpha > 0 else '-'})의 방향이 달라 해석에 사람의 재확인이 필요함"
-        )
-
-    else:
-        verdict = "채택"
-        reasons.append(
+    res = evaluate_gate(
+        n_events=n_events, t_stat=raw_t_stat,
+        bh_significant=bh_significant, require_bh=bh_significant is not None,
+        dsr_significant=dsr_significant, require_dsr=dsr_significant is not None,
+        alpha=alpha, alpha_t_stat=alpha_t_stat, factor_available=True,
+        mean_return=raw_mean_return,
+        min_n_events=min_n_events, t_threshold=t_threshold,
+    )
+    verdict = res["verdict"]
+    reasons = list(res["reasons"])
+    if verdict == "채택":
+        # 채택 사유 문구는 이 함수가 원래 쓰던 형태를 유지한다(리포트·테스트 호환).
+        reasons = [
             f"원 신호 유의(|t|={abs(raw_t_stat):.2f}), 알파도 같은 방향으로 유의"
             f"(|alpha_t|={abs(alpha_t_stat):.2f})"
             + (", 다중검정 보정도 통과" if bh_significant else "")
             + " — 팩터로 설명되지 않는 예측력으로 판단"
-        )
+        ]
+    layers = res["layers"]
 
     return dict(
         verdict=verdict, reasons=reasons, n_events=n_events,
         raw_mean_return=raw_mean_return, raw_t_stat=raw_t_stat,
         alpha=alpha, alpha_t_stat=alpha_t_stat, r_squared=r_squared,
-        bh_significant=bh_significant,
+        bh_significant=bh_significant, dsr_significant=dsr_significant,
+        layers=layers,
     )
 
 
@@ -128,7 +109,8 @@ def judge_indicator(df: pd.DataFrame, event_col: str, direction: int, factor_df:
                      min_n_events: int = 10, t_threshold: float = 3.0,
                      entry_lag: int = 0, entry_col: str | None = None,
                      cost_bps: float = 0.0, slippage_bps: float = 0.0,
-                     bh_significant: bool | None = None) -> dict:
+                     bh_significant: bool | None = None,
+                  dsr_significant: bool | None = None) -> dict:
     """
     5개 지표 중 하나의 이벤트 컬럼에 대해, [3단계 이벤트 스터디] + [5단계 팩터
     조정 알파]를 전부 계산한 뒤 judge_signal()로 최종 판정까지 한 번에 낸다.
@@ -169,5 +151,5 @@ def judge_indicator(df: pd.DataFrame, event_col: str, direction: int, factor_df:
         alpha=factor_result["alpha"], alpha_t_stat=factor_result["alpha_t_stat"],
         r_squared=factor_result["r_squared"],
         min_n_events=min_n_events, t_threshold=t_threshold,
-        bh_significant=bh_significant,
+        bh_significant=bh_significant, dsr_significant=dsr_significant,
     )

@@ -79,7 +79,13 @@ print(f"[OK] 표본 부족 + 풀링 없음 -> 전부 미검증 처리 확인 ({l
 # 가짜 풀링 통계를 강하게 유의하도록 주입하면, 표본 부족한 신호가 "pooled"
 # 근거로 검증되는지 확인(하이브리드 동작)
 low_sample_labels = {s.label for s in verdict_no_pool.active_signals if s.n_events < cfg.min_own_events}
-fake_pooled = {s.label: dict(n=500, mean=0.01, t_stat=10.0) for s in verdict_no_pool.active_signals}
+# 풀링 통계에는 묶음 차원 보정 결과(BH·DSR)가 같이 실려 있어야 한다. 실제
+# compute_pooled_stats()가 그 두 키를 채워서 돌려준다 — 공통 게이트가 "검사하지
+# 않은 항목을 통과로 흘려보내지 않기" 때문에, 보정 결과 없는 풀링 통계는
+# 아래 추가 케이스처럼 검증되지 않는다.
+fake_pooled = {s.label: dict(n=500, mean=0.01, t_stat=10.0,
+                              significant_bh=True, significant_dsr=True)
+               for s in verdict_no_pool.active_signals}
 verdict_with_pool = evaluate_symbol(df_target, "TEST", cfg, pooled_stats=fake_pooled)
 upgraded = [s for s in verdict_with_pool.active_signals
             if s.label in low_sample_labels and s.basis == "pooled" and s.validated]
@@ -91,6 +97,27 @@ own_preserved = [s for s in verdict_with_pool.active_signals
 assert len(own_preserved) == len(verdict_no_pool.active_signals) - len(low_sample_labels)
 print(f"[OK] 하이브리드: 표본 부족 신호({len(low_sample_labels)}개)는 풀링 통계 주입 시 pooled로 "
       f"검증되고, 표본 충분한 신호는 own을 그대로 유지")
+
+# [공통 게이트] 다중검정 보정 결과가 빠진 풀링 통계는 t가 아무리 커도 검증되면 안 된다.
+# 예전 어드바이저는 |t| >= 임계값 하나만 봤기 때문에, 유니버스를 스캔하며 신호를
+# 여럿 동시에 보면서도 다중검정 보정을 전혀 하지 않았다. 그게 이번에 고친 결함이다.
+pooled_no_correction = {s.label: dict(n=500, mean=0.01, t_stat=10.0)
+                         for s in verdict_no_pool.active_signals}
+verdict_nc = evaluate_symbol(df_target, "TEST", cfg, pooled_stats=pooled_no_correction)
+leaked = [s for s in verdict_nc.active_signals
+          if s.label in low_sample_labels and s.validated]
+assert not leaked, f"BH·DSR 없는 풀링 통계가 t=10.0만으로 검증을 통과함: {[s.label for s in leaked]}"
+assert verdict_nc.verdict == "보유", verdict_nc.verdict
+print("[OK] 공통 게이트: BH·DSR 결과가 없는 풀링 통계는 |t|=10.0이어도 미검증 -> 보유")
+
+# BH는 통과했는데 DSR에서 떨어지면 역시 검증되면 안 된다(알림 경로와 같은 기준).
+pooled_dsr_fail = {s.label: dict(n=500, mean=0.01, t_stat=10.0,
+                                  significant_bh=True, significant_dsr=False)
+                   for s in verdict_no_pool.active_signals}
+verdict_df = evaluate_symbol(df_target, "TEST", cfg, pooled_stats=pooled_dsr_fail)
+assert not [s for s in verdict_df.active_signals
+            if s.label in low_sample_labels and s.validated], "DSR 탈락인데 검증됨"
+print("[OK] 공통 게이트: BH 통과 + DSR 탈락 -> 미검증(알림·규칙판정과 같은 기준)")
 
 # ---------------------------------------------------------------------------
 # 2) 다수결 로직 직접 확인 (충돌 시 보유로 떨어지는지)

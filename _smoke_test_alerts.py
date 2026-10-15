@@ -25,7 +25,7 @@ def fake_load_data(args):
 
 def make_fake_run(event_true_on_last: bool, bh_significant: bool, judge_horizon: int = 5,
                    dsr_significant: bool | None = None, with_dsr_col: bool = True,
-                   tb: dict | None = None):
+                   tb: dict | None = None, n_events: int = 30, t_stat: float = 4.0):
     """
     dsr_significant: DSR 게이트 통과 여부. None이면 bh_significant를 따라간다
         (DSR 도입 전 테스트들이 그대로 통과하도록).
@@ -38,7 +38,10 @@ def make_fake_run(event_true_on_last: bool, bh_significant: bool, judge_horizon:
     def fake_run(df_, args):
         dfi = pd.DataFrame({"crossover_confirmed": False}, index=df_.index)
         dfi.loc[dfi.index[-1], "crossover_confirmed"] = event_true_on_last
+        # 공통 게이트(decision/gate.py)가 표본수와 t-stat도 보므로 요약표에 같이 넣는다.
+        # 실제 compare_all() 출력에도 n_events·t_stat 컬럼이 있다.
         row = {"signal": "델타트레이딩-골든크로스", "horizon": judge_horizon,
+               "n_events": n_events, "t_stat": t_stat,
                "significant_bh": bh_significant}
         if with_dsr_col:
             row["significant_dsr"] = dsr_significant
@@ -63,9 +66,11 @@ print("[PASS] 1) krx 기본값: BH보정 미통과 -> 알림 없음")
 
 rb.run = make_fake_run(event_true_on_last=True, bh_significant=True)
 msgs = cs.check_one(krx_item, state)
-assert len(msgs) == 1 and "BH보정" in msgs[0] and "통과 신호" in msgs[0]
+assert len(msgs) == 1, f"BH·DSR 통과인데 {len(msgs)}건"
+assert "공통 판정 게이트 통과" in msgs[0], msgs[0]
+assert "BH 다중검정 통과" in msgs[0] and "DSR 통과" in msgs[0], msgs[0]
 assert krx_key in state
-print("[PASS] 2) krx 기본값: BH보정 통과 -> 알림 1건('BH보정 통과' 문구 포함)")
+print("[PASS] 2) krx 기본값: 공통 게이트 통과 -> 알림 1건(층별 결과 문구 포함)")
 
 # --- upbit 종목: 기본 require_significance=False (원시 이벤트 즉시 알림) ---
 upbit_item = {"market": "upbit", "symbol": "KRW-BTC", "label": "비트코인"}
@@ -141,10 +146,33 @@ _state_box["last_date"] = pd.Timestamp("2024-04-04")
 rb.run = make_fake_run(event_true_on_last=True, bh_significant=True, with_dsr_col=False)
 state8 = {}
 msgs = cs.check_one(krx_item, state8)
-assert len(msgs) == 1, f"DSR 컬럼 없을 때 BH만으로 통과해야 하는데 {len(msgs)}건"
-assert "DSR" not in msgs[0], msgs[0]
-assert "BH보정(다중검정)" in msgs[0], msgs[0]
-print("[PASS] 10) significant_dsr 컬럼 자체가 없으면 BH만으로 판정(하위호환)")
+# [동작 변경] 예전에는 significant_dsr 컬럼이 없으면 BH만으로 통과시켰다. 지금은
+# 공통 게이트가 "검사하지 않은 항목을 통과로 흘려보내지 않는다"는 원칙을 따르므로
+# DSR 판정불가 -> 보류 -> 알림 억제가 된다. 선택편의 보정을 확인하지 못한 신호를
+# 통과시키는 건 게이트를 두는 의미를 없애기 때문.
+rb.run = make_fake_run(event_true_on_last=True, bh_significant=True, with_dsr_col=False)
+state8 = {}
+msgs = cs.check_one(krx_item, state8)
+assert len(msgs) == 0, f"DSR 판정불가인데 알림 {len(msgs)}건 생성됨"
+assert krx_key not in state8
+print("[PASS] 10) significant_dsr 컬럼이 없으면 판정불가 -> 알림 억제(통과로 흘려보내지 않음)")
+
+# --- 공통 바닥: 표본수와 개별 t-stat도 게이트에 포함된다 --------------------
+# 예전 알림 경로는 BH/DSR만 봤고 표본수·t 임계값을 아예 안 봤다. 같은 신호를
+# rule_based는 |t|>=3.0으로 거르는데 알림은 통과시키는 불일치가 있었다.
+_state_box["last_date"] = pd.Timestamp("2024-04-05")
+rb.run = make_fake_run(True, bh_significant=True, dsr_significant=True, n_events=9)
+state8b = {}
+msgs = cs.check_one(krx_item, state8b)
+assert len(msgs) == 0, f"표본 9건(<10)인데 알림 {len(msgs)}건"
+print("[PASS] 10b) BH·DSR 통과라도 표본 9건 < 10건이면 알림 억제")
+
+_state_box["last_date"] = pd.Timestamp("2024-04-06")
+rb.run = make_fake_run(True, bh_significant=True, dsr_significant=True, t_stat=2.5)
+state8c = {}
+msgs = cs.check_one(krx_item, state8c)
+assert len(msgs) == 0, f"|t|=2.5 < 3.0인데 알림 {len(msgs)}건"
+print("[PASS] 10c) BH·DSR 통과라도 |t|=2.5 < 3.0이면 알림 억제(rule_based와 같은 기준)")
 
 # --- 설정 기본값 확인 -------------------------------------------------------
 from alerts.config import DEFAULTS, args_for_watch_item

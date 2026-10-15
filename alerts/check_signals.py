@@ -43,6 +43,7 @@ import pandas as pd
 import run_backtest as rb
 from backtest.engine import SIGNAL_SPECS
 
+from decision.gate import evaluate_gate, format_layers
 from alerts.config import args_for_watch_item, load_watchlist
 from alerts.state import load_state, save_state
 from alerts.telegram import send_telegram
@@ -89,8 +90,10 @@ def check_one(item: dict, state: dict) -> list[str]:
     pt_mult = getattr(args, "barrier_pt_mult", 2.0)
     sl_mult = getattr(args, "barrier_sl_mult", 1.0)
     if require_significance and not has_dsr_col:
-        print(f"[참고] {label}({item['symbol']}): summary에 significant_dsr 컬럼이 "
-              f"없어 BH보정만으로 판정합니다(alerts.config의 deflate 설정 확인).")
+        print(f"[경고] {label}({item['symbol']}): summary에 significant_dsr 컬럼이 "
+              f"없습니다(alerts.config의 deflate 설정 확인) — 검사하지 않은 항목을 "
+              f"통과로 흘려보내지 않으므로, 이번 실행에서는 이 종목의 어떤 신호도 "
+              f"알림 기준을 통과하지 않습니다.")
     if require_significance and not has_bh_col:
         print(f"[경고] {label}({item['symbol']}): summary에 significant_bh 컬럼이 "
               f"없습니다(표본이 너무 적어 BH보정 자체가 스킵됐을 수 있음) — 이번 "
@@ -103,23 +106,28 @@ def check_one(item: dict, state: dict) -> list[str]:
         if not bool(df_i[event_col].iloc[-1]):
             continue
 
+        gate_result = None
         if require_significance:
-            if not has_bh_col:
+            # 판정 기준은 decision/gate.py 한 곳에 있다. 예전에는 여기서 BH·DSR을
+            # 직접 if로 검사했는데, 그러면 같은 질문("이 신호를 믿을 것인가")에
+            # 알림·어드바이저·규칙판정이 각자 다른 답을 내게 된다. 이제는 세 진입점이
+            # 같은 게이트를 부르고, 알림은 "채택"일 때만 보낸다.
+            # 알림 경로는 팩터 회귀를 돌리지 않으므로 알파 층은 해당 없음이다.
+            sig_row = summary[(summary["signal"] == signal_label) &
+                               (summary["horizon"] == judge_horizon)] if has_bh_col else None
+            if sig_row is None or sig_row.empty:
                 continue
-            sig_row = summary[(summary["signal"] == signal_label) & (summary["horizon"] == judge_horizon)]
-            if sig_row.empty:
+            r0 = sig_row.iloc[0]
+            gate_result = evaluate_gate(
+                n_events=r0.get("n_events"), t_stat=r0.get("t_stat"),
+                bh_significant=bool(r0["significant_bh"]) if has_bh_col else None,
+                dsr_significant=bool(r0["significant_dsr"]) if has_dsr_col else None,
+                factor_available=False,
+                min_n_events=int(getattr(args, "min_n_events", 10)),
+                t_threshold=float(getattr(args, "t_threshold", 3.0)),
+            )
+            if gate_result["verdict"] != "채택":
                 continue
-            bh_ok = bool(sig_row["significant_bh"].iloc[0])
-            if not bh_ok:
-                continue  # 원시 이벤트는 떴지만 BH보정을 통과 못한 신호 — 알리지 않음(조건 강화)
-            # DSR(디플레이티드 샤프비율) 2차 게이트. BH의 p-value는 정규분포
-            # 가정에서 나온 값이라 왜도·첨도가 큰 수익률에서 유의성을 과대평가한다.
-            # DSR은 그 비정규성과 "여러 번 시도해서 고른 최고값"이라는 선택편의를
-            # 같이 보정한다. 컬럼이 없으면(구버전 engine 등) BH 결과만 쓴다.
-            if has_dsr_col:
-                dsr_ok = bool(sig_row["significant_dsr"].iloc[0])
-                if not dsr_ok:
-                    continue
 
         state_key = f"{item['market']}:{item['symbol']}:{indicator_key}:{event_col}"
         date_str = str(last_date.date() if hasattr(last_date, "date") else last_date)
@@ -156,9 +164,8 @@ def check_one(item: dict, state: dict) -> list[str]:
 
         direction_kr = "상승(롱)" if direction == 1 else "하락(숏)"
         if require_significance:
-            gate = "BH보정+DSR(디플레이티드 샤프비율)" if has_dsr_col else "BH보정(다중검정)"
-            verify_line = (f"- 보유기간 {judge_horizon}봉 기준, 이번 실행의 {gate} "
-                            f"통과 신호입니다.\n")
+            verify_line = (f"- 보유기간 {judge_horizon}봉 기준 공통 판정 게이트 통과: "
+                            f"{format_layers(gate_result)}\n")
         else:
             verify_line = ("- 주의: 이 신호는 통계적 검증(BH보정) 없이 원시 이벤트 발생 즉시 "
                             "보내는 알림입니다 — 과거 신뢰도는 대시보드에서 직접 확인하세요.\n")
