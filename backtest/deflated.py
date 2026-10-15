@@ -63,9 +63,9 @@ EULER_GAMMA = 0.5772156649015329
 # 정규분포 CDF / 역CDF (scipy 없이)
 # ---------------------------------------------------------------------------
 
-def norm_cdf(z: float) -> float:
-    """표준정규분포 누적분포함수 P(Z <= z)."""
-    return 0.5 * math.erfc(-z / math.sqrt(2.0))
+# 구현은 backtest/stats.py 한 곳에만 둔다. 이 모듈에서 norm_cdf를 import하던
+# 기존 호출부(테스트 포함)가 그대로 동작하도록 이름을 다시 내보낸다.
+from backtest.stats import norm_cdf  # noqa: F401  (re-export)
 
 
 # Acklam(2003) 유리근사 계수. 상대오차 약 1.15e-9.

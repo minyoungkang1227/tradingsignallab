@@ -85,14 +85,14 @@ def spy_judge_indicator(*args, **kwargs):
 
 rb.judge_indicator = spy_judge_indicator
 args_mom = make_args(market="krx", mom_filter=True)
+# 팩터 수를 줄이면 소표본에서 설계행렬이 특이해질 수 있다. 예전에는 그때
+# np.linalg.LinAlgError가 올라와 파이프라인 전체가 멈췄고, 이 테스트도 예외를
+# 잡아 넘겨야 했다. 지금은 factor_adjust()가 NaN + 사유로 돌려주므로 예외가
+# 올라오면 안 된다 — 회귀가 성립하든 안 하든 run_judgment()는 끝까지 돌아야 한다.
 try:
     rb.run_judgment(dfs_by_indicator, summary, args_mom, judge_horizon=5)
-except np.linalg.LinAlgError:
-    # 이 테스트의 관심사는 "factor_cols를 무엇으로 선택했는가"이지 회귀 자체의
-    # 수치안정성이 아니다(팩터 수를 줄이면 소표본에서 우연히 설계행렬이 특이
-    # (singular)해질 수 있음 — 실제 pykrx 데이터라면 표본이 훨씬 크므로 발생
-    # 가능성이 낮다). 여기서는 factor_cols 선택 로직만 검증하고 넘어간다.
-    pass
+except np.linalg.LinAlgError as exc:
+    raise AssertionError(f"특이행렬이 예외로 올라옴(NaN 반환으로 처리돼야 함): {exc}")
 rb.judge_indicator = orig_judge_indicator  # 원상복구
 
 assert len(captured_factor_cols) > 0
@@ -106,8 +106,8 @@ rb.judge_indicator = spy_judge_indicator
 args_explicit = make_args(market="krx", mom_filter=True, factor_cols="SMB,HML,WML")
 try:
     rb.run_judgment(dfs_by_indicator, summary, args_explicit, judge_horizon=5)
-except np.linalg.LinAlgError:
-    pass
+except np.linalg.LinAlgError as exc:
+    raise AssertionError(f"특이행렬이 예외로 올라옴(NaN 반환으로 처리돼야 함): {exc}")
 rb.judge_indicator = orig_judge_indicator
 
 assert all(cols == ("SMB", "HML", "WML") for cols in captured_factor_cols)

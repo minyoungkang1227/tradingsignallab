@@ -116,8 +116,7 @@ def _chi2_sf(x: float, df: int) -> float:
     return min(1.0, math.exp(-xx + a * math.log(xx) - lg) * h)
 
 
-def _p1_from_z(z):
-    return 0.5 * math.erfc(z / math.sqrt(2.0))      # 단측 p = P(Z > z)
+from backtest.stats import norm_sf as _p1_from_z   # 단측 p = P(Z > z), 구현은 stats.py 한 곳
 
 
 def pool_signal(rows: pd.DataFrame) -> dict:

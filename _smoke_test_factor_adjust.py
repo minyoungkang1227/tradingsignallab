@@ -48,5 +48,41 @@ assert abs(result2["alpha"] - TRUE_ALPHA) < 1e-6, f"event_alpha alpha 불일치:
 tiny = factor_adjust(DATES[:2], EVENT_RETURNS[:2], factor_df)
 assert tiny["n_obs"] == 2
 assert np.isnan(tiny["alpha"])
+assert tiny["note"] and "표본 부족" in tiny["note"], tiny["note"]
+print("[OK] 3) 표본 부족 -> NaN + 사유")
+
+# 4) 설계행렬 특이(rank 부족) — 예외 대신 NaN + 사유로 돌려주는지.
+#    손계산: 이벤트 30건이 전부 정확히 같은 날(2020-03-31, 팩터 리밸런싱일)에 있으면
+#    merge_asof가 30행 모두에 같은 팩터 행 1개를 붙인다. 그러면 설계행렬의 30개 행이
+#    전부 동일하므로 rank = 1이다. 파라미터는 4개(절편+팩터 3)라 계수가 유일하지 않다.
+same_day = pd.to_datetime(["2020-03-31"] * 30)
+singular = factor_adjust(same_day, np.linspace(0.01, 0.03, 30), factor_df)
+assert singular["n_obs"] == 30
+assert np.isnan(singular["alpha"]) and np.isnan(singular["alpha_t_stat"])
+assert all(np.isnan(b) and np.isnan(t) for b, t in singular["betas"].values())
+assert "rank 1" in singular["note"] and "1종류" in singular["note"], singular["note"]
+print("[OK] 4) 이벤트가 한 날에 몰림 -> rank 1 < 4, 예외 없이 NaN + 사유:", singular["note"])
+
+# 4b) 같은 '달'에 몰려도 월말 기준선을 사이에 두면 팩터 행 2종류가 붙는다.
+#     merge_asof(direction="nearest")가 3월 초 이벤트는 2020-02-29에, 3월 중순 이후는
+#     2020-03-31에 매칭시키기 때문. 그래도 서로 다른 행이 2개뿐이라 rank = 2 < 4.
+#     (이 경우가 실데이터에서 파이프라인을 멈추던 원인이다.)
+same_month = pd.to_datetime(["2020-03-%02d" % (d + 1) for d in range(30)])
+singular2 = factor_adjust(same_month, np.linspace(0.01, 0.03, 30), factor_df)
+assert np.isnan(singular2["alpha"])
+assert "rank 2" in singular2["note"] and "2종류" in singular2["note"], singular2["note"]
+print("[OK] 4b) 한 달에 몰림 -> 팩터 행 2종류, rank 2 < 4:", singular2["note"])
+
+# 5) 완전 공선성(두 팩터가 동일) — rank는 3이고 파라미터는 4이므로 역시 식별 불가.
+dup_df = factor_df.copy()
+dup_df["WML"] = dup_df["SMB"]          # WML을 SMB와 동일하게 만들어 열 하나를 중복시킴
+collinear = factor_adjust(DATES, EVENT_RETURNS, dup_df)
+assert np.isnan(collinear["alpha"]), collinear
+assert collinear["note"] and "rank 3" in collinear["note"], collinear["note"]
+print("[OK] 5) 팩터 열 중복 -> rank 3 < 4, NaN + 사유")
+
+# 6) 정상 케이스는 note=None (위 1번 결과 재확인) — 사유 필드가 항상 존재해야 한다.
+assert result["note"] is None and result2["note"] is None
+print("[OK] 6) 정상 회귀는 note=None, 사유 필드는 항상 존재")
 
 print("\nSMOKE TEST (factor_adjust) OK")

@@ -334,6 +334,23 @@ python build_kr_factors.py --start 20220101 --end 20240101 \
   가정(entry_lag/entry_col/cost_bps/slippage_bps)을 넘겨야 두 단계가 일관됩니다.
 - `combine_factors(smb_hml_df, wml_df)`로 SMB/HML과 WML을 하나의 `factor_df`로 결합.
 
+### 회귀가 성립하지 않을 때 — 숫자를 지어내지 않는다
+
+`factor_adjust()`는 계수가 유일하게 결정되지 않는 표본에서는 값을 전부 NaN으로 돌려주고
+`note`에 사유를 담습니다(정상일 때 `note=None`). 성립하지 않는 경우는 두 가지입니다.
+
+1. **표본 부족** — 유효 이벤트 수가 파라미터 수(절편 + 팩터 개수) 이하.
+2. **설계행렬 특이(rank 부족)** — 이벤트에 붙은 팩터 행이 몇 종류뿐이라 팩터들을 서로
+   구분할 수 없는 경우. `merge_asof(direction="nearest")`는 이벤트 날짜마다 가장 가까운
+   월말 팩터를 붙이므로, 한 종목의 이벤트가 짧은 기간에 몰리면 서로 다른 팩터 행이
+   1~2개밖에 안 붙어 rank가 파라미터 수에 못 미칩니다.
+
+2번은 예전에 `np.linalg.inv`가 `LinAlgError`를 던져 파이프라인 전체를 중단시키던
+지점입니다. 이제는 중단되지 않고 해당 신호만 판정 보류로 넘어갑니다
+(`judge_signal()`은 `alpha_t_stat`이 NaN이면 판정하지 않습니다). 최소노름 해(`pinv`)로
+숫자를 채우지 않는 이유는, 계수가 유일하지 않은 상태에서 고른 해는 알파를 임의로
+바꿔 놓아 "팩터로 설명되지 않는 알파"라는 해석 자체가 성립하지 않기 때문입니다.
+
 ### 모멘텀 필터와 WML의 이중차감 방지
 
 [2]단계에서 이미 `--mom-filter`(Jegadeesh & Titman 모멘텀)로 추세 신호만
@@ -640,6 +657,8 @@ indicators/          지표 6종 재구현(5종 + combo_filter) + 모멘텀 필�
 backtest/engine.py   이벤트 스터디 엔진 (forward_return, event_study, event_returns,
                      compare_all, factor_adjust, event_alpha, benjamini_hochberg,
                      cluster_robust_t_stat)
+backtest/stats.py    정규분포 꼬리확률(norm_sf/norm_cdf) 단일 구현 — engine·deflated·
+                     walkforward가 전부 여기를 쓴다(모듈마다 복제하면 p값 기준이 갈림)
 backtest/deflated.py, triple_barrier.py, economics.py   DSR, 트리플 배리어, R 기대값·손익분기
 backtest/profiles.py     --profile realistic 프리셋
 backtest/oos.py, walkforward.py, regime.py   표본 외, 반복 Walk-forward, 시장 국면
@@ -687,6 +706,7 @@ README.md            프로젝트 소개, 할 수 있는 일/입증되지 않은
 | `_smoke_test_cli_oos_regime.py`, `_smoke_test_cli_help.py` | run_backtest.py 확장 옵션 배관, 도움말 |
 | `_smoke_test_combo_filter.py` | 콤보 필터 점수·신호 |
 | `_smoke_test_report_common.py` | 표준 리포트 블록 항목·순서·라벨·비용 미반영 표기 |
+| `_smoke_test_stats.py` | 정규분포 꼬리확률 손계산 기준값, 항등식, 세 모듈이 단일 구현을 쓰는지 |
 | `_smoke_test_docs_sync.py` | OVERVIEW 옵션 대조표가 argparse 실제 정의와 일치하는지 |
 | `_smoke_test_execution_log.py` | 실행 로그 손계산, signal_id 결정성, 재실행 시 중복 없음 |
 | `_smoke_test_alerts.py`, `smoke_test_alerts.py`, `smoke_test_github_sync.py` | 알림 판정·상태 저장, GitHub 동기화(base64, 409 충돌), 네트워크 호출은 모킹 |
@@ -707,7 +727,7 @@ README.md            프로젝트 소개, 할 수 있는 일/입증되지 않은
 | `_smoke_test.py` | 5개 지표 + 필터 전체 파이프라인이 정상 동작하는지 |
 | `_smoke_test_factors.py` | SMB/HML 계산식이 사이즈·가치효과를 정확히 분리하는지 |
 | `_smoke_test_wml.py` | WML(모멘텀 팩터) 계산 정확성 |
-| `_smoke_test_factor_adjust.py` | OLS 회귀가 알파·베타를 오차 1e-9 이내로 복원하는지 |
+| `_smoke_test_factor_adjust.py` | OLS 회귀가 알파·베타를 오차 1e-9 이내로 복원하는지, 표본 부족·설계행렬 특이 시 예외 없이 NaN+사유 |
 | `_smoke_test_decision.py` | 규칙 기반 판정 7가지 분기 전부(bh_significant 관련 포함) |
 | `_smoke_test_cost_entry.py` | 거래비용·t+1 체결지연 수치 정확성 |
 | `_smoke_test_survivorship.py` | 생존 편향 완화(전손 반영) 수치·방향성 정확성 |

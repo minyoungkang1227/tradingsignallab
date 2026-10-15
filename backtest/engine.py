@@ -558,9 +558,9 @@ def compare_all(dfs_by_indicator: dict[str, pd.DataFrame], horizons=(1, 3, 5, 10
 # scipy 없이 정규분포 근사(math.erfc)만으로 p-value를 계산하는, 다른 모듈들과
 # 동일한 의존성 최소화 설계.
 # ---------------------------------------------------------------------------
-def _normal_sf(z: float) -> float:
-    """표준정규분포 생존함수 P(Z > z). math.erfc로 직접 계산(scipy 불필요)."""
-    return 0.5 * math.erfc(z / math.sqrt(2))
+# 구현은 backtest/stats.py 한 곳에만 둔다(같은 식이 모듈마다 복제돼 있으면
+# 나중에 근사를 바꿀 때 모듈별로 p값이 갈린다). 기존 이름은 호출부 호환을 위해 유지.
+from backtest.stats import norm_sf as _normal_sf
 
 
 def p_value_from_t(t_stat: float) -> float:
@@ -635,8 +635,13 @@ def factor_adjust(event_dates, event_returns, factor_df: pd.DataFrame,
     (다른 모듈들과 동일하게 의존성을 최소화하는 설계).
 
     반환: dict(alpha, alpha_t_stat, betas={factor_col: (beta, t_stat)},
-              n_obs, r_squared)
-    표본이 파라미터 수보다 적으면(n_obs <= len(factor_cols)+1) 전부 NaN으로 반환.
+              n_obs, r_squared, note)
+    회귀가 성립하지 않으면 값은 전부 NaN이고 note에 사유 문자열이 들어간다(정상일 때는
+    note=None). 성립하지 않는 경우는 두 가지다 — (1) 표본이 파라미터 수 이하,
+    (2) 설계행렬이 완전계수가 아님(이벤트가 한 달에 몰려 팩터 열이 상수가 되는 경우 등).
+    이때 억지로 숫자를 만들지 않는 이유는, 계수가 유일하게 결정되지 않는 상태에서
+    고른 해는 알파를 임의로 바꿔 놓기 때문이다. judge_signal()은 alpha_t_stat이
+    NaN이면 판정을 보류한다.
     """
     ev = pd.DataFrame({"date": pd.to_datetime(pd.Index(event_dates)),
                         "ret": np.asarray(event_returns, dtype=float)})
@@ -651,21 +656,52 @@ def factor_adjust(event_dates, event_returns, factor_df: pd.DataFrame,
 
     n = len(merged)
     k = len(factor_cols) + 1  # 절편 포함 파라미터 수
-    if n <= k:
+
+    def _undefined(note: str, n_obs: int) -> dict:
+        """회귀가 성립하지 않을 때의 반환값 — 숫자를 지어내지 않고 전부 NaN + 사유."""
         return dict(alpha=np.nan, alpha_t_stat=np.nan,
                      betas={c: (np.nan, np.nan) for c in factor_cols},
-                     n_obs=n, r_squared=np.nan)
+                     n_obs=n_obs, r_squared=np.nan, note=note)
+
+    if n <= k:
+        return _undefined(f"표본 부족: 유효 이벤트 {n}건 <= 파라미터 {k}개", n)
 
     X = np.column_stack([np.ones(n)] + [merged[c].values for c in factor_cols])
     y = merged["ret"].values
+
+    # 설계행렬이 완전계수(full rank)가 아니면 계수가 유일하게 결정되지 않는다.
+    # 실제로 자주 나오는 경우: 이벤트가 전부 같은 달에 몰려 merge_asof가 모든 행에
+    # 같은 팩터값을 붙이면 각 팩터 열이 상수가 되어 절편 열의 배수가 된다. 이때
+    # np.linalg.inv(X.T @ X)는 LinAlgError를 던져 파이프라인 전체를 중단시켰다.
+    # 숫자를 억지로 만들어내면(예: pinv의 최소노름 해) 알파가 임의로 갈라지므로,
+    # "이 표본으로는 알파를 식별할 수 없다"고 NaN + 사유로 돌려준다.
+    # judge_signal()은 alpha_t_stat이 NaN이면 이미 판정을 보류하도록 돼 있다.
+    rank = int(np.linalg.matrix_rank(X))
+    if rank < k:
+        # 원인을 정확히 짚으려면 "서로 다른 팩터 행이 몇 개 붙었는가"를 봐야 한다.
+        # merge_asof(direction="nearest")는 이벤트 날짜마다 가장 가까운 리밸런싱
+        # 시점을 붙이므로, 이벤트가 한 달 안에 있어도 월말 기준선을 사이에 두면
+        # 서로 다른 팩터 행 2개가 붙을 수 있다(그래도 rank는 2에 그쳐 4보다 작다).
+        n_distinct = int(merged[list(factor_cols)].drop_duplicates().shape[0])
+        return _undefined(
+            f"설계행렬 특이(rank {rank} < 파라미터 {k}): 이벤트 {n}건에 붙은 팩터 행이"
+            f" {n_distinct}종류뿐이라 팩터들을 서로 구분할 수 없음", n)
 
     beta_hat, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
     resid = y - X @ beta_hat
     dof = n - k
     ssr = float((resid ** 2).sum())
     sigma2 = ssr / dof
-    xtx_inv = np.linalg.inv(X.T @ X)
-    se = np.sqrt(np.diag(xtx_inv) * sigma2)
+    try:
+        xtx_inv = np.linalg.inv(X.T @ X)
+    except np.linalg.LinAlgError:
+        # rank 검사를 통과해도 수치적으로 거의 특이한 경우가 남을 수 있다(조건수 폭증).
+        # numpy 버전에 따라 여기서 예외가 나기도 하고 경고만 나기도 해서, 어느 쪽이든
+        # 같은 결과(판정 보류)가 되도록 명시적으로 처리한다.
+        return _undefined(
+            f"설계행렬이 수치적으로 특이함(조건수 과대, 이벤트 {n}건)", n)
+    with np.errstate(invalid="ignore"):
+        se = np.sqrt(np.diag(xtx_inv) * sigma2)
     t_stats = np.divide(beta_hat, se, out=np.full_like(beta_hat, np.nan), where=se > 0)
 
     sst = float(((y - y.mean()) ** 2).sum())
@@ -675,7 +711,7 @@ def factor_adjust(event_dates, event_returns, factor_df: pd.DataFrame,
               for i in range(len(factor_cols))}
 
     return dict(alpha=float(beta_hat[0]), alpha_t_stat=float(t_stats[0]),
-                betas=betas, n_obs=n, r_squared=r_squared)
+                betas=betas, n_obs=n, r_squared=r_squared, note=None)
 
 
 def event_alpha(df: pd.DataFrame, event_col: str, factor_df: pd.DataFrame,
