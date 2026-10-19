@@ -378,7 +378,9 @@ TradingAgents(Xiao et al. 2024)류 LLM 멀티에이전트 판단 구조를 참�
 `judge_signal()`의 판정 기준(7가지 분기, `--t-threshold` 기본값 **3.0**):
 
 1. 표본(`n_events`)이 너무 적음 → **보류**
-2. 원 신호 t-stat이 유의하지 않음(|t| < `t_threshold`) → **기각**
+2. 원 신호 t-stat이 `+t_threshold`에 못 미침 → **기각** (t<0은 수익률에 이미 방향이 곱해진 값이라
+   "유의하게 손실 나는 신호"이므로 절댓값이 아니라 부호를 본다. `decision/gate.py` 한 곳에서
+   처리하므로 advisor·알림·규칙판정·`run_param_search.py`의 IS/OOS 통과 판정이 같은 기준을 쓴다)
 3. `bh_significant`가 `False`로 명시됨 → **기각**(개별 t-stat은 유의해도 다중검정
    보정을 통과하지 못함 — p-hacking 가능성)
 4. 알파 t-stat 계산 불가(회귀 표본 부족) → **보류**

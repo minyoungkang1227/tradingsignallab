@@ -104,6 +104,12 @@ class SymbolContext:
                               slippage_bps=args.slippage_bps)
 
 
+def _t_passes(t_stat: float, threshold: float) -> bool:
+    """부호를 본다: 수익률에 direction이 곱해져 있어 t>=+임계만 '신호 방향으로 유의'다.
+    abs()를 쓰면 유의하게 손실 나는 조합도 통과한다."""
+    return bool(pd.notna(t_stat) and t_stat >= threshold)
+
+
 def _pooled_t_stat(contexts: list[SymbolContext], mom_threshold: float, liq_threshold: float,
                     horizon: int, split_date, period: str, args) -> tuple[float, float, int]:
     """period='is' 또는 'oos'. 풀링된 (mean, t_stat, n_events)를 반환한다."""
@@ -171,12 +177,12 @@ def run_search(dfs_by_symbol: dict[str, pd.DataFrame], args) -> dict:
     bonferroni_threshold = bonferroni_t_threshold(k_trials, alpha=args.alpha)
     deflated_threshold = deflated_t_threshold_sqrt2lnk(k_trials)
     required_threshold = max(bonferroni_threshold, deflated_threshold)
-    is_pass = bool(pd.notna(is_t_stat) and abs(is_t_stat) >= required_threshold)
+    is_pass = _t_passes(is_t_stat, required_threshold)
 
     oos_mean, oos_t_stat, oos_n = _pooled_t_stat(contexts, final_params["mom_threshold"],
                                                   final_params["liq_threshold"], args.target_horizon,
                                                   args.split_date, "oos", args)
-    oos_pass = bool(pd.notna(oos_t_stat) and abs(oos_t_stat) >= 2.0)
+    oos_pass = _t_passes(oos_t_stat, 2.0)
 
     return dict(
         target_signal=label, target_horizon=args.target_horizon, split_date=str(args.split_date),
@@ -194,13 +200,13 @@ def print_report(result: dict):
         print(f"  [{name}] {plateau.reason}")
     print(f"  최종 파라미터: {result['final_params']}")
     print(f"  시도 횟수(K)={result['n_evaluations']} -> "
-          f"Bonferroni 임계|t|={result['bonferroni_threshold']:.3f}, "
-          f"sqrt(2lnK) 임계|t|={result['deflated_threshold']:.3f}")
+          f"Bonferroni 임계 t=+{result['bonferroni_threshold']:.3f}, "
+          f"sqrt(2lnK) 임계 t=+{result['deflated_threshold']:.3f}")
     print(f"  IS : n={result['is_n_events']} mean={result['is_mean']:.4%} "
           f"t={result['is_t_stat']:.3f} -> {'통과' if result['is_pass'] else '기각'}"
           f"(임계 {max(result['bonferroni_threshold'], result['deflated_threshold']):.3f} 기준)")
     print(f"  OOS: n={result['oos_n_events']} mean={result['oos_mean']:.4%} "
-          f"t={result['oos_t_stat']:.3f} -> {'재현됨(|t|>=2)' if result['oos_pass'] else '재현 안 됨'}")
+          f"t={result['oos_t_stat']:.3f} -> {'재현됨(t>=+2)' if result['oos_pass'] else '재현 안 됨'}")
     if result["is_pass"] and result["oos_pass"]:
         print("  => IS에서 통과하고 OOS에서도 재현됨: 이 파라미터 조합을 강인하다고 볼 근거가 있음")
     elif result["is_pass"] and not result["oos_pass"]:

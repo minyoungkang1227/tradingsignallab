@@ -53,7 +53,7 @@
       ▼
 [7] 판단 (규칙 기반) ← 구현 완료
       decision/rule_based.py: judge_signal(), judge_indicator()
-      [3]의 원 신호 t-stat(기본 |t|≥3.0) + [5]의 알파·알파 t-stat + [3]의 다중검정 보정 결과를
+      [3]의 원 신호 t-stat(기본 t≥+3.0, 부호 반영) + [5]의 알파·알파 t-stat + [3]의 다중검정 보정 결과를
       규칙(if/else)으로 판정
       → "채택"/"보류"/"기각" + 근거 문장. LLM 호출 없음(재현성·비용·지연 문제 회피)
       ▼
@@ -71,7 +71,7 @@
       ▼
 [10] 알림·대시보드  ← 운영 구성됨
       alerts/check_signals.py (평일 16:10 KST, GitHub Actions): 국내 주식은 공통 판정 게이트
-      (decision/gate.py — 표본수·|t|·BH·DSR) 통과 신호만,
+      (decision/gate.py — 표본수·t(부호 반영)·BH·DSR) 통과 신호만,
       업비트는 신호 즉시 → 텔레그램. 배리어·경제성 결과는 메시지에 정보로만 첨부(게이트 아님)
       app.py (Streamlit): 결과 조회, 감시리스트 편집(관리자 전용, github_sync.py로 저장소에 반영)
 ```

@@ -27,7 +27,7 @@
 어드바이저가 영원히 보류로 떨어지거나, 반대로 검증 못 한 알파를 통과로 흘려보낸다.
 
 [공통 바닥]
-표본수 + 개별 t-stat + BH + DSR은 세 진입점 모두의 최소 기준이다. 알파는 팩터
+표본수 + 개별 t-stat(t >= +임계, 부호 반영) + BH + DSR은 세 진입점 모두의 최소 기준이다. 알파는 팩터
 데이터가 있을 때만 요구한다. t 임계값은 3.0으로 통일했다 — Harvey, Liu & Zhu(2016)가
 금융 신호의 최소 기준으로 제시한 값이고, BH·DSR과는 거르는 축이 달라 대체재가
 아니라 이중 방어선이다.
@@ -80,7 +80,8 @@ def evaluate_gate(*, n_events, t_stat,
                    require_bh: bool = True, require_dsr: bool = True) -> dict:
     """
     n_events: 이 신호의 이벤트(표본) 수.
-    t_stat: 비용·체결지연을 반영한 이벤트 수익률의 t-통계량.
+    t_stat: 비용·체결지연을 반영한 이벤트 수익률의 t-통계량. 수익률에 방향이 이미 곱해져 있으므로
+        부호가 의미를 가진다: t >= +t_threshold 만 통과, t <= -t_threshold 는 '유의하게 손실'로 기각.
     bh_significant / dsr_significant: 각각 BH(FDR) 보정과 DSR을 통과했는지.
         True/False는 판정 결과, None은 '계산되지 않음'이다. require_* 가 True면
         None은 판정불가(보류)가 되고, False면 해당없음으로 건너뛴다.
@@ -111,12 +112,19 @@ def evaluate_gate(*, n_events, t_stat,
     if _is_nan(t_stat):
         layers.append(Layer("개별 t-stat", UNKNOWN,
                              "원 신호의 t-stat을 계산할 수 없음 (수익률 데이터 부족)"))
-    elif abs(float(t_stat)) < t_threshold:
-        layers.append(Layer("개별 t-stat", FAIL,
-                             f"원 신호 자체가 통계적으로 유의하지 않음 "
-                             f"(|t|={abs(float(t_stat)):.2f} < {t_threshold})"))
+    elif float(t_stat) < t_threshold:
+        # 수익률에는 direction(롱 +1/숏 -1)이 이미 곱해져 있다 → t>0 은 신호 방향이 맞았다는 뜻이고
+        # t<0 은 '유의하게 반대로 갔다(손실 신호)'는 뜻이다. 절댓값으로 보면 손실 신호가 통과한다.
+        if float(t_stat) <= -t_threshold:
+            layers.append(Layer("개별 t-stat", FAIL,
+                                 f"원 신호가 유의하게 반대 방향(손실)으로 움직임 "
+                                 f"(t={float(t_stat):.2f} <= -{t_threshold})"))
+        else:
+            layers.append(Layer("개별 t-stat", FAIL,
+                                 f"원 신호 자체가 통계적으로 유의하지 않음 "
+                                 f"(t={float(t_stat):.2f} < +{t_threshold})"))
     else:
-        layers.append(Layer("개별 t-stat", PASS, f"|t|={abs(float(t_stat)):.2f} >= {t_threshold}"))
+        layers.append(Layer("개별 t-stat", PASS, f"t={float(t_stat):.2f} >= +{t_threshold}"))
 
     # --- 3) BH 다중검정 보정 -------------------------------------------------
     layers.append(_binary_layer(
