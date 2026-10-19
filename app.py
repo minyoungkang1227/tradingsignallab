@@ -24,7 +24,6 @@ import pandas as pd
 import streamlit as st
 
 import run_backtest as rb
-from backtest.engine import SIGNAL_SPECS
 from alerts.github_sync import (
     GitHubSyncError, STRENGTH_LABELS, fetch_watchlist, items_to_rows, rows_to_items,
     update_watchlist,

@@ -42,7 +42,6 @@ Benjamini-Hochberg(compare_all()의 significant_bh)가 "사후에" 다중검정�
 직접 지정해 기존 기준(2.0)으로 되돌릴 수 있다.
 """
 from __future__ import annotations
-import math
 import pandas as pd
 
 
@@ -87,7 +86,7 @@ def judge_signal(n_events: int, raw_mean_return: float, raw_t_stat: float,
     if verdict == "채택":
         # 채택 사유 문구는 이 함수가 원래 쓰던 형태를 유지한다(리포트·테스트 호환).
         reasons = [
-            f"원 신호 유의(|t|={abs(raw_t_stat):.2f}), 알파도 같은 방향으로 유의"
+            f"원 신호 유의(t={raw_t_stat:.2f}), 알파도 같은 방향으로 유의"
             f"(|alpha_t|={abs(alpha_t_stat):.2f})"
             + (", 다중검정 보정도 통과" if bh_significant else "")
             + " — 팩터로 설명되지 않는 예측력으로 판단"

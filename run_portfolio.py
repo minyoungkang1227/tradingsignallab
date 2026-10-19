@@ -14,11 +14,9 @@ backtest/profiles.py를 그대로 쓴다 — 여기서 지표나 백테스트 �
 from __future__ import annotations
 
 import argparse
-import sys
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 import run_backtest as rb
 from alerts.config import args_for_watch_item, load_watchlist

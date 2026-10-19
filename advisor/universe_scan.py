@@ -25,10 +25,13 @@ from research.param_search import pool_event_returns
 from advisor.evaluator import evaluate_symbol, _compute_indicator_dfs
 
 
-def compute_pooled_stats(dfs_by_symbol: dict[str, pd.DataFrame], cfg) -> dict[str, dict]:
+def compute_pooled_stats(dfs_by_symbol: dict[str, pd.DataFrame], cfg,
+                          indicator_dfs_by_symbol: dict[str, dict] | None = None) -> dict[str, dict]:
     """
     dfs_by_symbol: {symbol: OHLCV df, ...} (유니버스 전체).
     cfg: evaluator._compute_indicator_dfs와 동일한 설정 객체.
+    indicator_dfs_by_symbol: 이미 계산해둔 {symbol: _compute_indicator_dfs() 결과}. 주면 재계산하지 않는다
+        (scan_universe가 종목당 지표 계산을 한 번만 하도록 넘겨준다). None이면 직접 계산(기존 동작).
 
     반환: {signal_label: {"n": int, "mean": float, "t_stat": float}}. n=0이면
     그 신호가 유니버스 어디에서도 한 번도 뜨지 않았다는 뜻(풀링 불가).
@@ -37,8 +40,9 @@ def compute_pooled_stats(dfs_by_symbol: dict[str, pd.DataFrame], cfg) -> dict[st
     종목에서 동시에 이벤트가 뜨는" 횡단면 상관이 생기는데, 이걸 무시하면
     t-stat이 부풀려진다(research/param_search.py, 8절 참고).
     """
-    indicator_dfs_by_symbol = {symbol: _compute_indicator_dfs(df, cfg)
-                                for symbol, df in dfs_by_symbol.items()}
+    if indicator_dfs_by_symbol is None:
+        indicator_dfs_by_symbol = {symbol: _compute_indicator_dfs(df, cfg)
+                                    for symbol, df in dfs_by_symbol.items()}
 
     pooled_stats: dict[str, dict] = {}
     for indicator_key, event_col, direction, label in SIGNAL_SPECS:
@@ -111,11 +115,15 @@ def scan_universe(dfs_by_symbol: dict[str, pd.DataFrame], cfg) -> tuple[pd.DataF
                   "다른 유망 종목"으로 보여준다.
       pooled_stats : compute_pooled_stats()의 결과 그대로(캐시 저장용).
     """
-    pooled_stats = compute_pooled_stats(dfs_by_symbol, cfg)
+    # 지표 계산(특히 VP박스)이 비싸므로 종목당 한 번만 하고 풀링·판정 양쪽에서 재사용한다.
+    indicator_dfs_by_symbol = {symbol: _compute_indicator_dfs(df, cfg)
+                                for symbol, df in dfs_by_symbol.items()}
+    pooled_stats = compute_pooled_stats(dfs_by_symbol, cfg, indicator_dfs_by_symbol=indicator_dfs_by_symbol)
 
     rows = []
     for symbol, df in dfs_by_symbol.items():
-        verdict = evaluate_symbol(df, symbol, cfg, pooled_stats=pooled_stats)
+        verdict = evaluate_symbol(df, symbol, cfg, pooled_stats=pooled_stats,
+                                   indicator_dfs=indicator_dfs_by_symbol[symbol])
         rows.append(verdict.to_row())
 
     scan_df = pd.DataFrame(rows)
