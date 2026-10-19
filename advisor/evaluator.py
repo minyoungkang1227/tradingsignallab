@@ -37,7 +37,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import numpy as np
 import pandas as pd
 
 from indicators import (institutional_displacement, delta_trading, big_sales,
@@ -158,7 +157,8 @@ def _stats_from_row(row) -> tuple[int, float, float, object, object]:
     return n, mean, t_stat, bh, dsr
 
 
-def evaluate_symbol(df: pd.DataFrame, symbol: str, cfg, pooled_stats: dict | None = None) -> SymbolVerdict:
+def evaluate_symbol(df: pd.DataFrame, symbol: str, cfg, pooled_stats: dict | None = None,
+                     indicator_dfs: dict | None = None) -> SymbolVerdict:
     """
     df: 그 종목의 전체 OHLCV 히스토리(가장 최근 봉까지 포함).
     cfg: 지표·필터·판정 파라미터를 담은 설정 객체(run_advisor.py의 argparse
@@ -170,10 +170,13 @@ def evaluate_symbol(df: pd.DataFrame, symbol: str, cfg, pooled_stats: dict | Non
         때(하이브리드 신뢰도 판단) 대체로 쓰인다. None이면 표본 부족 시
         "미검증"으로만 처리한다.
 
+    indicator_dfs: 이미 계산해둔 _compute_indicator_dfs(df, cfg) 결과. 주면 재계산하지 않는다
+        (universe_scan.scan_universe가 종목당 지표 계산을 한 번만 하려고 넘겨준다). None이면 직접 계산.
+
     반환: SymbolVerdict — 오늘(가장 최근 봉) 활성화된 신호 목록과 그 신뢰도,
     그리고 보수적 다수결로 합친 최종 매수/보유/매도.
     """
-    dfs = _compute_indicator_dfs(df, cfg)
+    dfs = indicator_dfs if indicator_dfs is not None else _compute_indicator_dfs(df, cfg)
     as_of = str(df.index[-1].date()) if len(df) else "N/A"
 
     # 종목 자체 통계는 신호 전부를 한 묶음으로 평가해야 BH·DSR이 성립한다.

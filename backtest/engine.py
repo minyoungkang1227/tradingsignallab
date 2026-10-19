@@ -5,7 +5,7 @@
 예측력을 t-검정 수준에서 빠르게 스크리닝하기 위한 도구다.
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import math
 import numpy as np
 import pandas as pd
