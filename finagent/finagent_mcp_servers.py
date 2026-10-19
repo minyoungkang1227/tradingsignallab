@@ -56,6 +56,34 @@ def _resp(source, mode, ok=True, data=None, rows=None, warnings=None, as_of=None
         warnings=warnings or []), ensure_ascii=False)
 
 
+def _need_key(env: str, source: str):
+    """live 모드인데 키가 없으면 깔끔한 실패 응답을 돌려준다(KeyError 대신)."""
+    if not os.environ.get(env):
+        return _resp(source, "live", ok=False, warnings=[f"{env} 환경변수가 없습니다 (live 모드)"])
+    return None
+
+
+def _err(e: Exception) -> str:
+    """예외 메시지에서 API 키를 가린다(경고 문구는 리포트에 그대로 실린다)."""
+    t = f"{type(e).__name__}: {e}"
+    for env in ("DART_API_KEY", "ECOS_API_KEY", "FRED_API_KEY", "KRX_API_KEY"):
+        k = os.environ.get(env)
+        if k and len(k) >= 4:
+            t = t.replace(k, "***")
+    return t
+
+
+def _num(x, default=0.0) -> float:
+    """DART 금액 문자열 파싱. 결측은 '-' 또는 '' 또는 None으로 온다."""
+    t = str(x if x is not None else "").replace(",", "").strip()
+    if t in ("", "-", "None"):
+        return default
+    try:
+        return float(t)
+    except ValueError:
+        return default
+
+
 # ════════════════════════════════════════════════════════════════════
 # DART
 # ════════════════════════════════════════════════════════════════════
@@ -90,8 +118,13 @@ def dart_financials_impl(corp_code: str, year: int, reprt_code: str = "11011") -
         f = _DART_FIX["event_risk" if SCENARIO == "event_risk" else "baseline"]
         rev, op, ni, li, eq = f["revenue"], f["op_income"], f["net_income"], f["liabilities"], f["equity"]
     else:
-        j = _dart_live("fnlttSinglAcntAll.json", corp_code=corp_code, bsns_year=str(year),
-                       reprt_code=reprt_code, fs_div="CFS")
+        if (bad := _need_key("DART_API_KEY", "dart")):
+            return bad
+        try:
+            j = _dart_live("fnlttSinglAcntAll.json", corp_code=corp_code, bsns_year=str(year),
+                           reprt_code=reprt_code, fs_div="CFS")
+        except Exception as e:
+            return _resp("dart", mode, ok=False, warnings=[f"DART 호출 실패: {_err(e)}"])
         if j.get("status") != "000":
             return _resp("dart", mode, ok=False, warnings=[f"DART status={j.get('status')}: {j.get('message')}"])
         acc = {}
@@ -100,8 +133,7 @@ def dart_financials_impl(corp_code: str, year: int, reprt_code: str = "11011") -
             for k, tgt in (("매출액", "rev"), ("영업이익", "op"), ("당기순이익", "ni"),
                            ("부채총계", "li"), ("자본총계", "eq")):
                 if nm == k and tgt not in acc:
-                    f = lambda s: float(str(s).replace(",", "") or 0)
-                    acc[tgt] = (f(it.get("frmtrm_amount")), f(it.get("thstrm_amount")))
+                    acc[tgt] = (_num(it.get("frmtrm_amount")), _num(it.get("thstrm_amount")))
         miss = {"rev", "op", "ni", "li", "eq"} - set(acc)
         if miss:
             return _resp("dart", mode, ok=False, warnings=[f"계정 누락: {sorted(miss)}"])
@@ -123,9 +155,14 @@ def dart_disclosures_impl(corp_code: str, days: int = 30) -> str:
             return _resp("dart", mode, ok=False, warnings=["공시 조회 실패 (fixture bad_data)"])
         items = _DART_FIX["event_risk" if SCENARIO == "event_risk" else "baseline"]["disclosures"]
     else:
+        if (bad := _need_key("DART_API_KEY", "dart")):
+            return bad
         end = date.today()
-        j = _dart_live("list.json", corp_code=corp_code, bgn_de=(end - timedelta(days=days)).strftime("%Y%m%d"),
-                       end_de=end.strftime("%Y%m%d"), page_count=50)
+        try:
+            j = _dart_live("list.json", corp_code=corp_code, bgn_de=(end - timedelta(days=days)).strftime("%Y%m%d"),
+                           end_de=end.strftime("%Y%m%d"), page_count=50)
+        except Exception as e:
+            return _resp("dart", mode, ok=False, warnings=[f"DART 호출 실패: {_err(e)}"])
         if j.get("status") not in ("000", "013"):
             return _resp("dart", mode, ok=False, warnings=[f"DART status={j.get('status')}: {j.get('message')}"])
         RISK = ("유상증자", "감자", "횡령", "배임", "상장폐지", "감사의견", "회생", "부도", "불성실")
@@ -157,13 +194,20 @@ def ecos_series_impl(name: str, n: int = 3) -> str:
             return _resp("ecos", mode, ok=False, warnings=["ECOS 응답 없음 (fixture bad_data)"])
         vals = _ECOS_FIX.get(SCENARIO, _ECOS_FIX["baseline"])[name][-n:]
     else:
+        if (bad := _need_key("ECOS_API_KEY", "ecos")):
+            return bad
         sys.path.insert(0, str(_core_path()))
-        from data.ecos import fetch_ecos_series
         stat, item, cyc = ECOS_CODES[name]
         end = date.today()
         fmt, span = ("%Y%m%d", 60) if cyc == "D" else ("%Y%m", 400)
-        s = fetch_ecos_series(stat, item, (end - timedelta(days=span)).strftime(fmt), end.strftime(fmt), cycle=cyc)
+        try:
+            from data.ecos import fetch_ecos_series
+            s = fetch_ecos_series(stat, item, (end - timedelta(days=span)).strftime(fmt), end.strftime(fmt), cycle=cyc)
+        except Exception as e:
+            return _resp("ecos", mode, ok=False, warnings=[f"ECOS 호출 실패: {_err(e)}"])
         vals = [float(v) for v in s.tail(n)]
+    if not vals:
+        return _resp("ecos", mode, ok=False, warnings=[f"'{name}' 구간에 데이터가 없습니다"])
     chg = vals[-1] / vals[0] - 1 if vals[0] else 0.0
     return _resp("ecos", mode, data=dict(series=name, values=vals, last=vals[-1], change_pct=round(chg * 100, 2)),
                  rows=[dict(시리즈=name, 최근값=vals[-1], 기간변화율_pct=round(chg * 100, 2))])
@@ -190,12 +234,17 @@ def fred_series_impl(series_id: str) -> str:
         last = _FRED_FIX.get(SCENARIO, _FRED_FIX["baseline"])[series_id][-1]
         d = str(date.today())
     else:
+        if (bad := _need_key("FRED_API_KEY", "fred")):
+            return bad
         import requests
-        r = requests.get("https://api.stlouisfed.org/fred/series/observations", timeout=15, params=dict(
-            series_id=series_id, api_key=os.environ["FRED_API_KEY"], file_type="json",
-            sort_order="desc", limit=10))
-        r.raise_for_status()
-        obs = [o for o in r.json().get("observations", []) if o["value"] != "."]  # 결측은 "."
+        try:
+            r = requests.get("https://api.stlouisfed.org/fred/series/observations", timeout=15, params=dict(
+                series_id=series_id, api_key=os.environ["FRED_API_KEY"], file_type="json",
+                sort_order="desc", limit=10))
+            r.raise_for_status()
+            obs = [o for o in r.json().get("observations", []) if o["value"] != "."]  # 결측은 "."
+        except Exception as e:
+            return _resp("fred", mode, ok=False, warnings=[f"FRED 호출 실패: {_err(e)}"])
         if not obs:
             return _resp("fred", mode, ok=False, warnings=["유효 관측치 없음"])
         last, d = float(obs[0]["value"]), obs[0]["date"]
@@ -290,10 +339,18 @@ def signal_evaluate_impl(symbol: str) -> str:
     if mode == "fixture":
         df = _fixture_ohlcv(symbol)
     else:
-        from data.krx import fetch_krx_ohlcv
         end = date.today()
-        df = fetch_krx_ohlcv(symbol, (end - timedelta(days=3 * 365)).strftime("%Y%m%d"), end.strftime("%Y%m%d"))
-    v = evaluate_symbol(df, symbol, _signal_cfg())
+        try:
+            from data.krx import fetch_krx_ohlcv
+            df = fetch_krx_ohlcv(symbol, (end - timedelta(days=3 * 365)).strftime("%Y%m%d"), end.strftime("%Y%m%d"))
+        except Exception as e:
+            return _resp("signal", mode, ok=False, warnings=[f"OHLCV 수집 실패({symbol}): {_err(e)}"])
+        if df is None or len(df) == 0:
+            return _resp("signal", mode, ok=False, warnings=[f"OHLCV 데이터가 비어 있습니다({symbol})"])
+    try:
+        v = evaluate_symbol(df, symbol, _signal_cfg())
+    except Exception as e:
+        return _resp("signal", mode, ok=False, warnings=[f"evaluate_symbol 실패({symbol}): {_err(e)}"])
     sigs = [dict(label=s.label, direction=s.direction, evaluator_validated=bool(s.validated), basis=s.basis,
                  n_events=int(s.n_events), mean_return=None if s.mean_return != s.mean_return else round(s.mean_return, 5),
                  t_stat=None if s.t_stat != s.t_stat else round(float(s.t_stat), 3)) for s in v.active_signals]
