@@ -2,5 +2,6 @@
   "krx:000660:vp_box:poc_resistance_test": "2026-10-07",
   "krx:005930:vp_box:poc_resistance_test": "2026-10-07",
   "krx:035720:vp_box:poc_resistance_test": "2026-10-07",
-  "upbit:KRW-BTC:vp_box:poc_resistance_test": "2026-10-19"
+  "upbit:KRW-BTC:vp_box:poc_resistance_test": "2026-10-19",
+  "upbit:KRW-BTC:vp_box:poc_support_test": "2026-10-21"
 }
