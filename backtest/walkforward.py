@@ -78,44 +78,7 @@ def _se_from_t(mean, t):
     return abs(mean / t)
 
 
-def _chi2_sf(x: float, df: int) -> float:
-    """카이제곱 꼬리확률 P(X > x). scipy 없이 정규화된 상한 불완전 감마 Q(df/2, x/2)로 계산한다."""
-    if df <= 0 or x is None or not np.isfinite(x):
-        return float("nan")
-    if x <= 0:
-        return 1.0
-    a, xx = df / 2.0, x / 2.0
-    lg = math.lgamma(a)
-    if xx < a + 1.0:                                  # 급수: P(a,x), Q = 1 - P
-        term = total = 1.0 / a
-        n = a
-        for _ in range(500):
-            n += 1.0
-            term *= xx / n
-            total += term
-            if abs(term) < abs(total) * 1e-15:
-                break
-        return max(0.0, 1.0 - total * math.exp(-xx + a * math.log(xx) - lg))
-    tiny = 1e-300                                     # 연분수(Lentz): Q(a,x)
-    b = xx + 1.0 - a
-    c = 1.0 / tiny
-    d = 1.0 / b
-    h = d
-    for i in range(1, 500):
-        an = -i * (i - a)
-        b += 2.0
-        d = an * d + b
-        d = tiny if abs(d) < tiny else d
-        c = b + an / c
-        c = tiny if abs(c) < tiny else c
-        d = 1.0 / d
-        delta = d * c
-        h *= delta
-        if abs(delta - 1.0) < 1e-15:
-            break
-    return min(1.0, math.exp(-xx + a * math.log(xx) - lg) * h)
-
-
+from backtest.stats import chi2_sf as _chi2_sf   # 카이제곱 꼬리확률, 구현은 stats.py 한 곳
 from backtest.stats import norm_sf as _p1_from_z   # 단측 p = P(Z > z), 구현은 stats.py 한 곳
 
 
