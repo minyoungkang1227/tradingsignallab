@@ -128,14 +128,15 @@ def regime_header(res, ck: dict, judge_horizon: int, data_label=None, lo=None, h
     s = res.summary
     sh = res.share
     period = ("분석 구간 전체" if lo is None and hi is None else f"{lo or '처음'}~{hi or '끝'}")
+    labels = getattr(res, "labels", ("bull", "bear", "sideways"))
     period += f" (국면 분류 불가 워밍업 {res.n_unclassified}봉 제외; 비중 " + ", ".join(
-        f"{k} {sh[k]:.0%}" if pd.notna(sh[k]) else f"{k} -" for k in ("bull", "bear", "sideways")) + ")"
+        f"{k} {sh[k]:.0%}" if pd.notna(sh[k]) else f"{k} -" for k in labels) + ")"
     if s.empty:
         samples, result = "국면별 이벤트 없음", "판정할 조합 없음"
     else:
         sub = s[(s["horizon"] == judge_horizon) & (s["n_obs"] > 0)]
         per = ", ".join(f"{r} {int(sub.loc[sub['regime'] == r, 'n_obs'].sum())}건"
-                        for r in ("bull", "bear", "sideways"))
+                        for r in labels)
         samples = f"보유 {judge_horizon}봉 기준 국면별 관측 수: {per}"
         n_sig = int(sub["significant_bh_global"].sum()) if "significant_bh_global" in sub else 0
         result = f"전역 BH 유의 {n_sig}개 / 관측 있는 (국면×신호) {len(sub)}개 조합"

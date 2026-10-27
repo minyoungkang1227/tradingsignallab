@@ -92,6 +92,13 @@ rs = pd.read_csv(out3 / "regime_summary.csv")
 assert set(rs["regime"]).issubset({"bull", "bear", "sideways"}) and "significant_bh_global" in rs.columns
 print("[PASS] 5) 국면: regime_summary.csv 생성, 국면 라벨·전역 BH 컬럼 존재")
 
+# --- 5b) --regime --regime-kind vol (고변동/저변동) ----------------------------------------
+out3v, txt3v = run_cli(["--regime", "--regime-kind", "vol", "--vol-min-history", "150"])
+assert "[변동성 국면]" in txt3v and "고변동" in txt3v and "저변동" in txt3v, txt3v[:600]
+rsv = pd.read_csv(out3v / "regime_summary.csv")
+assert set(rsv["regime"]) == {"high_vol", "low_vol"} and "significant_bh_global" in rsv.columns
+print("[PASS] 5b) 변동성 국면: 라벨이 high_vol/low_vol로만 구성, 보고서에 고변동·저변동 출력")
+
 # --- 6) OOS 시작일이 학습 종료 이전이면 명확한 오류 ----------------------------------------
 try:
     run_cli(["--oos-train-end", tr_end, "--oos-test-start", str(ix[100].date())])

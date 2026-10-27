@@ -43,8 +43,11 @@ def make_symbol(seed, n=400, force_event_at_end=True):
     rng = np.random.RandomState(seed)
     dates = pd.date_range("2023-01-01", periods=n, freq="D")
     close = 100 * np.exp(np.cumsum(rng.normal(0.0003, 0.012, n)))
-    high = close * (1 + rng.uniform(0, 0.01, n))
-    low = close * (1 - rng.uniform(0, 0.01, n))
+    # 난수 소비 순서는 이전과 같게 유지한다(신호 발생 패턴이 바뀌지 않도록). 단 고가·저가는
+    # 종가를 끝에서 조정한 뒤 시가·종가를 감싸도록 마지막에 만든다 — 데이터 품질 게이트가
+    # high<close 같은 모순 행을 중단 사유로 보기 때문에 테스트 데이터도 정합해야 한다.
+    high_noise = rng.uniform(0, 0.01, n)
+    low_noise = rng.uniform(0, 0.01, n)
     open_ = close * (1 + rng.uniform(-0.005, 0.005, n))
     volume = rng.uniform(1000, 5000, n)
     if force_event_at_end:
@@ -53,7 +56,10 @@ def make_symbol(seed, n=400, force_event_at_end=True):
         volume[-3:] *= 20
         close[-2] = close[-3] * 1.05  # 강한 양봉으로 몸통비율 조건도 만족
         close[-1] = close[-2] * 1.05
-        high[-1] = close[-1] * 1.02
+    high = np.maximum(open_, close) * (1 + high_noise)
+    low = np.minimum(open_, close) * (1 - low_noise)
+    if force_event_at_end:
+        high[-1] = max(high[-1], close[-1] * 1.02)
     return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close,
                           "volume": volume}, index=dates)
 
@@ -171,14 +177,16 @@ def fake_load_symbol(market, symbol, args):
     n = 400
     dates = pd.date_range("2023-01-01", periods=n, freq="D")
     close = 100 * np.exp(np.cumsum(rng.normal(0.0003, 0.012, n)))
-    high = close * (1 + rng.uniform(0, 0.01, n))
-    low = close * (1 - rng.uniform(0, 0.01, n))
+    high_noise = rng.uniform(0, 0.01, n)
+    low_noise = rng.uniform(0, 0.01, n)
     open_ = close * (1 + rng.uniform(-0.005, 0.005, n))
     volume = rng.uniform(1000, 5000, n)
     volume[-3:] *= 20
     close[-2] = close[-3] * 1.05
     close[-1] = close[-2] * 1.05
-    high[-1] = close[-1] * 1.02
+    high = np.maximum(open_, close) * (1 + high_noise)
+    low = np.minimum(open_, close) * (1 - low_noise)
+    high[-1] = max(high[-1], close[-1] * 1.02)
     return pd.DataFrame({{"open": open_, "high": high, "low": low, "close": close,
                           "volume": volume}}, index=dates)
 

@@ -70,7 +70,8 @@ def _load_universe(args) -> dict[str, pd.DataFrame]:
     else:
         symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
 
-    result = collect_universe(symbols, lambda symbol: _load_symbol(args.market, symbol, args))
+    result = collect_universe(symbols, lambda symbol: _load_symbol(args.market, symbol, args),
+                               quality_gate=not getattr(args, "skip_quality_gate", False))
     return result.ok
 
 
@@ -144,6 +145,8 @@ def main():
     p.add_argument("--liq-window", dest="liq_window", type=int, default=20)
     p.add_argument("--liq-percentile-window", dest="liq_percentile_window", type=int, default=252)
     p.add_argument("--liq-threshold", dest="liq_threshold", type=float, default=0.9)
+    p.add_argument("--skip-quality-gate", dest="skip_quality_gate", action="store_true",
+                   help="데이터 품질 게이트를 건너뛴다(기본은 켜짐: 모순된 데이터의 종목은 제외하고 사유 출력)")
     p.add_argument("--entry-lag", dest="entry_lag", type=int, default=0)
     p.add_argument("--entry-col", dest="entry_col", default=None)
     p.add_argument("--cost-bps", dest="cost_bps", type=float, default=0.0)
@@ -214,7 +217,8 @@ def main():
 
     # 단일 종목 질의도 collect_universe로 통일해서, 실패 사유(예외 메시지)를
     # _load_symbol 안에서 삼키지 않고 그대로 사용자에게 보여준다.
-    single = collect_universe([args.symbol], lambda symbol: _load_symbol(args.market, symbol, args))
+    single = collect_universe([args.symbol], lambda symbol: _load_symbol(args.market, symbol, args),
+                               quality_gate=not getattr(args, "skip_quality_gate", False))
     if not single.ok:
         reason = single.failed.get(args.symbol, "알 수 없는 이유")
         sys.exit(f"{args.symbol} 데이터를 가져오지 못했습니다: {reason}")

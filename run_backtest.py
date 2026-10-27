@@ -70,6 +70,18 @@ def load_data(args) -> pd.DataFrame:
     else:
         sys.exit(f"unknown market: {args.market}")
 
+    # 데이터 품질 게이트: 값 자체가 모순이면(OHLC 위반·날짜 중복/역순·가격 결측) 멈춘다.
+    # 경고(날짜 공백·수익률 이상치)는 출력만 하고 계속한다. alerts/app/portfolio가 이 함수를
+    # 그대로 재사용하므로 여기 한 곳에서 걸면 전부 적용된다(SystemExit은 호출부가 이미 처리).
+    if not getattr(args, "skip_quality_gate", False):
+        from data.quality import run_quality_checks, V_STOP, V_WARN
+        report = run_quality_checks(df, symbol=str(getattr(args, "symbol", "")))
+        if report.verdict == V_STOP:
+            sys.exit(f"[데이터 품질 오류] 분석을 중단합니다. 원본 데이터를 확인하세요 "
+                     f"(무시하려면 --skip-quality-gate).\n{report.format()}")
+        if report.verdict == V_WARN:
+            print(report.format())
+
     if len(df) < 60:
         print(f"[경고] 데이터가 {len(df)}봉밖에 없습니다. 지표 계산이 불안정할 수 있습니다.")
     return df
@@ -341,12 +353,22 @@ def run_extended_studies(dfs_by_indicator: dict, args, slippage_arg, out_dir: Pa
         out["walk_forward"] = wf
 
     if args.regime:
-        from backtest.regime import classify_regime, regime_study, format_regime_report
+        from backtest.regime import classify_regime, regime_study, format_regime_report, REGIMES
         # 분류에는 지표와 무관한 가격 열이 필요하다 — 어느 지표 df든 같은 OHLCV를 갖고 있다.
         price_df = next(iter(dfs_by_indicator.values()))
-        regimes = classify_regime(price_df, ma_len=args.regime_ma_len, ret_len=args.regime_ret_len,
-                                  vol_len=args.regime_vol_len, z_thr=args.regime_z_thr)
-        rres = regime_study(dfs_by_indicator, regimes, ck)
+        if getattr(args, "regime_kind", "trend") == "vol":
+            from backtest.vol_regime import classify_vol_regime, regime_switches, VOL_REGIMES
+            regimes = classify_vol_regime(price_df, vol_len=args.vol_len, hi_q=args.vol_hi_q,
+                                          lo_q=args.vol_lo_q, min_history=args.vol_min_history)
+            labels = VOL_REGIMES
+            print(f"\n[변동성 국면] 실현변동성 {args.vol_len}봉, 확장 분위수 고변동 진입 ≥{args.vol_hi_q:g} / "
+                  f"저변동 복귀 ≤{args.vol_lo_q:g}, 분포 최소 {args.vol_min_history}봉. 라벨 전환 "
+                  f"{regime_switches(regimes)}회")
+        else:
+            regimes = classify_regime(price_df, ma_len=args.regime_ma_len, ret_len=args.regime_ret_len,
+                                      vol_len=args.regime_vol_len, z_thr=args.regime_z_thr)
+            labels = REGIMES
+        rres = regime_study(dfs_by_indicator, regimes, ck, labels=labels)
         from backtest.report_common import regime_header
         print("\n" + regime_header(rres, ck, judge_horizon, getattr(args, "data_label", None)))
         print("\n" + format_regime_report(rres, judge_horizon, min_n=args.regime_min_n))
@@ -465,6 +487,9 @@ def build_parser():
     p.add_argument("--barrier-no-intrabar", dest="barrier_intrabar", action="store_false",
                     help="--barrier일 때 봉 내부 고가/저가 대신 종가만으로 배리어 터치를 "
                          "판정한다(일봉 고저를 신뢰하기 어려울 때). 기본은 고저 사용")
+    p.add_argument("--skip-quality-gate", dest="skip_quality_gate", action="store_true",
+                    help="데이터 품질 게이트를 건너뛴다. 기본은 켜짐(OHLC 모순·날짜 중복/역순·가격 결측이면 "
+                         "분석을 중단하고, 날짜 공백·수익률 이상치는 경고만 출력). 원인을 확인한 뒤에만 쓸 것")
     p.add_argument("--profile", dest="profile", default=None, choices=["realistic"],
                     help="실전형 실행 조건 프리셋. realistic = 다음 봉 시가 진입, 시장별 왕복비용(KRX 36bp/업비트 10bp), "
                          "슬리피지 10bp, Newey-West, 겹침 제거, DSR, 배리어(순차·경제성)를 한 번에 켠다. "
@@ -513,6 +538,17 @@ def build_parser():
     p.add_argument("--regime", dest="regime", action="store_true",
                     help="시장 국면(상승/하락/횡보, 종목 자체 가격 기준)별로 나눠 신호 성과를 검증한다. "
                          "국면 전체에 걸친 BH 재보정과 국면 간 부호 일관성을 함께 보여준다. 기본 꺼짐")
+    p.add_argument("--regime-kind", dest="regime_kind", default="trend", choices=["trend", "vol"],
+                    help="--regime의 국면 기준. trend=상승/하락/횡보(기본), vol=고변동/저변동(종목 자체 실현변동성의 "
+                         "확장 분위수, 히스테리시스). 기본 trend")
+    p.add_argument("--vol-len", dest="vol_len", type=int, default=20,
+                    help="변동성 국면: 실현변동성(일간수익률 표준편차) 계산 구간. 기본 20봉")
+    p.add_argument("--vol-hi-q", dest="vol_hi_q", type=float, default=0.6,
+                    help="변동성 국면: 저변동에서 고변동으로 바뀌는 확장 분위수 문턱. 기본 0.6")
+    p.add_argument("--vol-lo-q", dest="vol_lo_q", type=float, default=0.4,
+                    help="변동성 국면: 고변동에서 저변동으로 돌아오는 분위수 문턱. 기본 0.4. 0.4~0.6 사이는 직전 상태 유지")
+    p.add_argument("--vol-min-history", dest="vol_min_history", type=int, default=252,
+                    help="변동성 국면: 분포를 믿기 위해 필요한 최소 변동성 관측 수. 이보다 앞의 봉은 분류 불가. 기본 252")
     p.add_argument("--regime-ma-len", dest="regime_ma_len", type=int, default=200,
                     help="국면 분류: 추세선(이동평균) 길이. 기본 200봉. 앞의 이 봉수만큼은 분류 불가")
     p.add_argument("--regime-ret-len", dest="regime_ret_len", type=int, default=60,

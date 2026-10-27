@@ -110,6 +110,7 @@ def assert_unique_columns(df: pd.DataFrame, context: str) -> pd.DataFrame:
 class CollectResult:
     ok: dict = field(default_factory=dict)      # symbol -> DataFrame
     failed: dict = field(default_factory=dict)  # symbol -> 실패 사유 문자열
+    quality: dict = field(default_factory=dict)  # symbol -> QualityReport (quality_gate=True일 때만 채워짐)
 
     def __len__(self) -> int:
         return len(self.ok)
@@ -119,7 +120,8 @@ class CollectResult:
 
 
 def collect_universe(symbols: Iterable[str], fetch_one: Callable[..., pd.DataFrame],
-                      min_len: int = 60, verbose: bool = True, **fetch_kwargs) -> CollectResult:
+                      min_len: int = 60, verbose: bool = True, quality_gate: bool = False,
+                      **fetch_kwargs) -> CollectResult:
     """
     symbols: 종목코드 iterable
     fetch_one: (symbol, **fetch_kwargs) -> pd.DataFrame 시그니처의 단일 종목
@@ -130,6 +132,10 @@ def collect_universe(symbols: Iterable[str], fetch_one: Callable[..., pd.DataFra
         실패로 처리한다(run_advisor.py/run_param_search.py가 기존에 개별
         구현했던 것과 동일한 기준, 기본값 60).
     verbose: True면 실패마다 경고를 출력한다(기존 스크립트들의 동작과 동일).
+    quality_gate: True면 종목마다 data.quality.run_quality_checks()를 돌린다. '중단' 판정
+        (OHLC 모순·날짜 중복/역순·가격 결측)이면 그 종목을 failed에 사유와 함께 넣고 제외하며,
+        '경고' 판정(날짜 공백·수익률 이상치·거래량 결측)이면 보고서를 출력하되 포함한다.
+        기본 False는 이전 동작과 완전히 같다. 검사 결과는 result.quality[symbol]에 남는다.
 
     반환: CollectResult. 종목 하나가 예외를 던지거나 데이터가 min_len
     미만이어도 나머지 종목 수집은 계속된다(원칙 3의 구현) — 이 함수 자체는
@@ -151,6 +157,18 @@ def collect_universe(symbols: Iterable[str], fetch_one: Callable[..., pd.DataFra
             if verbose:
                 print(f"[경고] {symbol}: 데이터가 {n}봉밖에 없어 건너뜁니다.")
             continue
+
+        if quality_gate:
+            from data.quality import run_quality_checks, V_STOP, V_WARN
+            report = run_quality_checks(df, symbol=str(symbol))
+            result.quality[symbol] = report
+            if report.verdict == V_STOP:
+                result.failed[symbol] = f"데이터 품질 실패 — {report.reasons()}"
+                if verbose:
+                    print(f"[경고] {symbol}: 데이터 품질 검사에 걸려 제외합니다.\n{report.format()}")
+                continue
+            if report.verdict == V_WARN and verbose:
+                print(report.format())
 
         result.ok[symbol] = df
 

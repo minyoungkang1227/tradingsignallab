@@ -235,7 +235,8 @@ def _load_symbols(args) -> dict[str, pd.DataFrame]:
     from data.collect import collect_universe
 
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
-    result = collect_universe(symbols, lambda symbol: _fetch_one_symbol(symbol, args))
+    result = collect_universe(symbols, lambda symbol: _fetch_one_symbol(symbol, args),
+                               quality_gate=not getattr(args, "skip_quality_gate", False))
     return result.ok
 
 
@@ -264,6 +265,8 @@ def main():
     p.add_argument("--liq-threshold-grid", dest="liq_threshold_grid",
                     default="0.8,0.85,0.9,0.95,0.99")
     p.add_argument("--liq-threshold-default", dest="liq_threshold_default", type=float, default=0.9)
+    p.add_argument("--skip-quality-gate", dest="skip_quality_gate", action="store_true",
+                   help="데이터 품질 게이트를 건너뛴다(기본은 켜짐: 모순된 데이터의 종목은 제외하고 사유 출력)")
     p.add_argument("--entry-lag", dest="entry_lag", type=int, default=0)
     p.add_argument("--entry-col", dest="entry_col", default=None)
     p.add_argument("--cost-bps", dest="cost_bps", type=float, default=0.0)

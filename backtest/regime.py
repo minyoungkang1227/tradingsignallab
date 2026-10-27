@@ -32,8 +32,10 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from backtest.vol_regime import VOL_REGIME_KR
+
 REGIMES = ("bull", "bear", "sideways")
-REGIME_KR = {"bull": "상승", "bear": "하락", "sideways": "횡보"}
+REGIME_KR = {"bull": "상승", "bear": "하락", "sideways": "횡보", **VOL_REGIME_KR}
 
 
 def classify_regime(df: pd.DataFrame, ma_len: int = 200, ret_len: int = 60, vol_len: int = 60,
@@ -53,12 +55,12 @@ def classify_regime(df: pd.DataFrame, ma_len: int = 200, ret_len: int = 60, vol_
     return out
 
 
-def regime_share(regimes: pd.Series) -> pd.Series:
-    """라벨별 봉 비율(분류 가능한 봉 기준)."""
+def regime_share(regimes: pd.Series, labels=REGIMES) -> pd.Series:
+    """라벨별 봉 비율(분류 가능한 봉 기준). labels 기본값은 추세 국면 3종."""
     r = regimes.dropna()
     if r.empty:
-        return pd.Series({k: np.nan for k in REGIMES})
-    return r.value_counts(normalize=True).reindex(list(REGIMES)).fillna(0.0)
+        return pd.Series({k: np.nan for k in labels})
+    return r.value_counts(normalize=True).reindex(list(labels)).fillna(0.0)
 
 
 @dataclass
@@ -68,6 +70,7 @@ class RegimeResult:
     n_unclassified: int              # 라벨이 NaN인 봉 수(워밍업)
     trials_by_regime: dict = field(default_factory=dict)   # DSR 시도 횟수 기록(검증용)
     params: dict = field(default_factory=dict)
+    labels: tuple = REGIMES          # 이 결과가 나눈 국면 라벨(추세 3종 또는 고변동/저변동)
 
 
 def _mask_to_dates(dfs_by_indicator: dict, signal_specs, allowed: pd.DatetimeIndex):
@@ -80,19 +83,22 @@ def _mask_to_dates(dfs_by_indicator: dict, signal_specs, allowed: pd.DatetimeInd
 
 
 def regime_study(dfs_by_indicator: dict, regimes: pd.Series, compare_kwargs: dict,
-                 lo=None, hi=None, blocked=None) -> RegimeResult:
+                 lo=None, hi=None, blocked=None, labels=REGIMES) -> RegimeResult:
     """
     국면별로 이벤트를 나눠 compare_all()을 각각 돌리고 합친다.
     lo/hi: 이벤트를 이 구간으로 제한(예: 검증 구간만). blocked: 제외할 날짜.
     이벤트가 없는 국면·신호도 compare_all()과 같이 n_events=0, 통계 NaN인 행으로 남는다(NaN p값은
     BH 계산에서 제외된다). 보고서(format_regime_report)는 관측이 있는 행만 보여준다.
+    labels: 나눌 국면 라벨. 기본은 추세 3종(bull/bear/sideways)이고, 변동성 국면은
+    backtest.vol_regime.VOL_REGIMES를 넘긴다. 국면 수가 달라지면 DSR 시도 횟수 가산과
+    전역 BH 보정도 그 국면 수에 맞춰 계산된다.
     """
     from backtest.engine import SIGNAL_SPECS, benjamini_hochberg, compare_all
     from backtest.oos import attach_n_obs
 
     kw = dict(compare_kwargs)
     horizons = tuple(kw["horizons"])
-    n_reg = len(REGIMES)
+    n_reg = len(labels)
     per_regime_rows = len(SIGNAL_SPECS) * len(horizons)      # 한 국면에서 가능한 시험 수의 상한
     base_extra = int(kw.get("extra_trials", 0))
     if kw.get("deflate"):
@@ -110,7 +116,7 @@ def regime_study(dfs_by_indicator: dict, regimes: pd.Series, compare_kwargs: dic
     ok_window &= ~any_df.index.isin(block_idx)
 
     parts, trials = [], {}
-    for r in REGIMES:
+    for r in labels:
         allowed = any_df.index[(reg == r).fillna(False).to_numpy() & ok_window.to_numpy()]
         masked = _mask_to_dates(dfs_by_indicator, SIGNAL_SPECS, allowed)
         summ, res = compare_all(masked, **kw)
@@ -127,9 +133,10 @@ def regime_study(dfs_by_indicator: dict, regimes: pd.Series, compare_kwargs: dic
                                                              fdr=kw.get("fdr", 0.10))
     else:
         allsum = pd.DataFrame()
-    return RegimeResult(summary=allsum, share=regime_share(reg), n_unclassified=int(reg.isna().sum()),
+    return RegimeResult(summary=allsum, share=regime_share(reg, labels), n_unclassified=int(reg.isna().sum()),
                         trials_by_regime=trials,
-                        params=dict(extra_trials_added=(n_reg - 1) * per_regime_rows if kw.get("deflate") else 0))
+                        params=dict(extra_trials_added=(n_reg - 1) * per_regime_rows if kw.get("deflate") else 0),
+                        labels=tuple(labels))
 
 
 def regime_consistency(summary: pd.DataFrame, min_n: int = 5) -> pd.DataFrame:
@@ -158,7 +165,7 @@ def format_regime_report(res: RegimeResult, judge_horizon: int, min_n: int = 5) 
     L = ["=== 시장 국면별 검증 (종목 자체 가격 기준) ==="]
     sh = res.share
     L.append("국면 비중(분류 가능한 봉 기준): " + ", ".join(
-        f"{REGIME_KR[k]} {sh[k]:.0%}" if pd.notna(sh[k]) else f"{REGIME_KR[k]} -" for k in REGIMES)
+        f"{REGIME_KR[k]} {sh[k]:.0%}" if pd.notna(sh[k]) else f"{REGIME_KR[k]} -" for k in res.labels)
         + f" | 분류 불가(워밍업) {res.n_unclassified}봉")
     if res.summary.empty:
         L.append("국면별로 이벤트가 하나도 없어 요약할 수 없습니다.")
