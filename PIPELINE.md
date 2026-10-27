@@ -11,7 +11,7 @@
 
 ```
 [0] 데이터 수집
-      │  data/upbit.py, data/krx.py
+      │  data/upbit.py, data/krx.py (+ data/quality.py 품질 게이트)
       │  → OHLCV DataFrame (open, high, low, close, volume)
       ▼
 [1] 지표 신호 생성 (6종: 원본 Pine Script 재구현 5종 + 직접 설계한 콤보 필터)
@@ -80,7 +80,7 @@
 
 | 단계 | 파일 | 입력 | 출력 | 상태 |
 |---|---|---|---|---|
-| 0. 데이터 수집 | `data/upbit.py`, `data/krx.py` | 종목코드, 기간 | OHLCV DataFrame | 완료 (네트워크 필요) |
+| 0. 데이터 수집 | `data/upbit.py`, `data/krx.py`, 품질 게이트 `data/quality.py` | 종목코드, 기간 | OHLCV DataFrame (품질 검사 통과분) | 완료 (네트워크 필요) |
 | 1. 지표 신호 생성 | `indicators/*.py` (6종) | OHLCV | 이벤트 컬럼 포함 df | 완료 |
 | 2. 신호 필터링 | `institutional_displacement.py`(z-score), `momentum.py`, `liquidity.py` | df + 파라미터 | 필터링된 이벤트 컬럼 | 완료 |
 | 3. 이벤트 스터디 | `backtest/engine.py`, `deflated.py`, `triple_barrier.py`, `economics.py` | 필터링된 df | t-stat 요약표, 수익률 곡선 | 완료 (거래비용·슬리피지·t+1 체결 옵션(기본값은 이전 동작과 동일), Newey-West·겹침 제거, Benjamini-Hochberg(p_value/significant_bh, 항상 계산됨), DSR·배리어·경제성(옵션, 기본 꺼짐)) |
@@ -121,3 +121,8 @@
 8. ~~DSR·트리플 배리어·경제적 유의성~~ — 완료. 알림 게이트는 국내 주식에서 BH → DSR, 배리어·경제성은 정보용.
 9. ~~표본 외 검증(OOS)·반복 Walk-forward·시장 국면별 검증·실전 프로필~~ — 완료(합성데이터 검증). **다음: 실제 시장 데이터로 실행해 결과 기록.**
 10. ~~포트폴리오 시뮬레이터~~ — 완료(합성데이터 검증). 다음: 학습 구간에서 고른 신호를 검증 구간에서만 시뮬레이션해 표본 외 포트폴리오 성과를 보는 연결.
+
+## 방향 전환 (2026-10) — 리스크 관리 중심
+
+위 파이프라인은 신호 검증 축입니다. 저장소의 본론은 `risk/`(시장리스크 측정·VaR 백테스트, 이후 스트레스·사이징·한도·모니터링)로 옮겨가며,
+이 파이프라인의 출력(검증된 신호)은 `risk/positions.py`의 비중 테이블로 변환되어 리스크 계층의 입력이 됩니다. README의 "리스크 관리 구성" 표 참고.
