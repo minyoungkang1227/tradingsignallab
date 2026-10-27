@@ -3,6 +3,9 @@
 alerts/watchlist.json에 적힌 종목들을 오늘자로 다시 돌려서, SIGNAL_SPECS에 등록된
 신호 중 "마지막 봉(가장 최근 날짜)"에 새로 뜬 신호를 텔레그램으로 알린다.
 
+[2026-10] 저장소가 리스크 관리 중심으로 바뀌면서 이 신호 알림은 기본 꺼짐이다. watchlist 항목에
+"signal_alerts": true 를 적은 종목만 처리한다. 매일 가는 알림은 alerts/check_risk.py(일일 리스크 요약·한도 위반)다.
+
 [시장별로 다른 조건] market에 따라 기본 엄격도가 다르다.
   - krx(국내 주식)  : 기본적으로 "이번 실행에서 BH(다중검정) 보정까지 통과한"
                        신호만 알린다 — 원시 이벤트가 떴어도 BH보정에서 떨어지면
@@ -36,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -52,6 +56,10 @@ def check_one(item: dict, state: dict) -> list[str]:
     """watchlist 항목 하나를 체크해서, 새로 보낼 알림 메시지 리스트를 반환하고
     state를 그 자리에서 갱신한다(아직 저장은 안 함 — 호출부가 전부 끝난 뒤 한 번에 저장)."""
     label = item.get("label", item["symbol"])
+    # 2026-10 리스크 중심 재구성: 신호 알림은 기본 꺼짐. 항목에 "signal_alerts": true를 적어야 동작한다.
+    # 일일 리스크 요약은 alerts/check_risk.py가 보낸다.
+    if not item.get("signal_alerts", False):
+        return []
     args = args_for_watch_item(item)
 
     try:

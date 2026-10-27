@@ -6,7 +6,7 @@
 
   1) 수집 함수는 심볼과 기간만 입력받아 표준화된 DataFrame
      (index=date 오름차순, columns=[open, high, low, close, volume])을
-     반환한다. 분석 스크립트(run_backtest.py, run_advisor.py, ...)는 데이터가
+     반환한다. 분석 스크립트(run_backtest.py, run_risk.py, ...)는 데이터가
      어디서 왔는지(업비트/KRX pykrx/KRX Open API) 몰라도 동작해야 한다 —
      이게 "관심사 분리"의 실질적 의미다.
   2) 수집 함수는 반환 직전 attach_fetch_meta()로 fetched_at(UTC 시각)·
@@ -17,9 +17,9 @@
      전체 수집을 중단시켜서는 안 된다 — 실패를 기록하고 다음 종목으로
      넘어가는 견고성(robustness)이 기본 동작이어야 한다.
 
-collect_universe()가 원칙 3)을 표준화한다. run_advisor.py의
-_load_universe()와 run_param_search.py의 _load_symbols()에 거의 동일하게
-중복돼 있던 "종목별 try/except + continue" 루프를 이 함수 하나로 대체한다.
+collect_universe()가 원칙 3)을 표준화한다. 예전 run_advisor.py·run_param_search.py
+(2026-10 리스크 중심 재구성 때 제거)에 거의 동일하게 중복돼 있던 "종목별 try/except +
+continue" 루프를 이 함수 하나로 대체한 것이고, 지금은 run_risk.py가 쓴다.
 """
 from __future__ import annotations
 
@@ -129,8 +129,7 @@ def collect_universe(symbols: Iterable[str], fetch_one: Callable[..., pd.DataFra
         등을 functools.partial로 감싸 넘긴다(뒤 인자를 symbol 하나만 받는
         형태로 고정).
     min_len: 이보다 짧은 데이터는 이후 통계 검정에서 의미가 없다고 보고
-        실패로 처리한다(run_advisor.py/run_param_search.py가 기존에 개별
-        구현했던 것과 동일한 기준, 기본값 60).
+        실패로 처리한다(기본값 60 — 예전 유니버스 스캔 스크립트들의 기준을 그대로 둠).
     verbose: True면 실패마다 경고를 출력한다(기존 스크립트들의 동작과 동일).
     quality_gate: True면 종목마다 data.quality.run_quality_checks()를 돌린다. '중단' 판정
         (OHLC 모순·날짜 중복/역순·가격 결측)이면 그 종목을 failed에 사유와 함께 넣고 제외하며,

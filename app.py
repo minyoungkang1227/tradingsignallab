@@ -384,7 +384,7 @@ with st.sidebar:
             if "watchlist_items" in st.session_state:
                 _df = pd.DataFrame(
                     items_to_rows(st.session_state["watchlist_items"]),
-                    columns=["시장", "종목코드", "이름", "강도"],
+                    columns=["시장", "종목코드", "이름", "비중", "신호알림", "강도"],
                 )
 
                 _edited = st.data_editor(
@@ -395,6 +395,12 @@ with st.sidebar:
                         "시장": st.column_config.SelectboxColumn(options=["krx", "upbit"], required=True),
                         "종목코드": st.column_config.TextColumn(required=True),
                         "이름": st.column_config.TextColumn(),
+                        "비중": st.column_config.NumberColumn(
+                            help="리스크 알림용 포트폴리오 비중(자산 대비, 숏은 음수). 한 시장에서 하나라도 비우면 그 시장은 동일비중",
+                            step=0.05, format="%.2f",
+                        ),
+                        "신호알림": st.column_config.CheckboxColumn(
+                            help="켜면 예전 방식의 신호 알림도 보냄(기본 꺼짐). 일일 리스크 요약은 항상 감"),
                         "강도": st.column_config.SelectboxColumn(
                             options=list(STRENGTH_LABELS.values()), required=True,
                         ),

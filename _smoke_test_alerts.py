@@ -54,8 +54,13 @@ def make_fake_run(event_true_on_last: bool, bh_significant: bool, judge_horizon:
 
 rb.load_data = fake_load_data
 
+# --- 0) 2026-10: 신호 알림은 기본 꺼짐 — signal_alerts 없는 항목은 데이터도 읽지 않고 빈 목록 ---
+_off_item = {"market": "krx", "symbol": "005930", "label": "삼성전자"}
+assert cs.check_one(_off_item, {}) == [], "signal_alerts 미지정이면 알림 없음(기본 꺼짐)"
+print("[OK] 0) signal_alerts 미지정 항목은 건너뜀(기본 꺼짐)")
+
 # --- krx 종목: 기본 require_significance=True (market != "upbit") ---
-krx_item = {"market": "krx", "symbol": "005930", "label": "삼성전자"}
+krx_item = {"market": "krx", "symbol": "005930", "label": "삼성전자", "signal_alerts": True}
 krx_key = "krx:005930:delta_trading:crossover_confirmed"
 
 rb.run = make_fake_run(event_true_on_last=True, bh_significant=False)
@@ -73,7 +78,7 @@ assert krx_key in state
 print("[PASS] 2) krx 기본값: 공통 게이트 통과 -> 알림 1건(층별 결과 문구 포함)")
 
 # --- upbit 종목: 기본 require_significance=False (원시 이벤트 즉시 알림) ---
-upbit_item = {"market": "upbit", "symbol": "KRW-BTC", "label": "비트코인"}
+upbit_item = {"market": "upbit", "symbol": "KRW-BTC", "label": "비트코인", "signal_alerts": True}
 upbit_key = "upbit:KRW-BTC:delta_trading:crossover_confirmed"
 
 _state_box["last_date"] = pd.Timestamp("2024-03-02")
@@ -86,7 +91,7 @@ assert upbit_key in state2
 print("[PASS] 3) upbit 기본값: BH와 무관하게 즉시 알림 1건('검증 없이' 문구 포함)")
 
 # --- upbit인데 watchlist.json에서 require_significance=True로 override ---
-upbit_strict_item = {"market": "upbit", "symbol": "KRW-ETH", "label": "이더리움",
+upbit_strict_item = {"market": "upbit", "symbol": "KRW-ETH", "label": "이더리움", "signal_alerts": True,
                       "require_significance": True}
 _state_box["last_date"] = pd.Timestamp("2024-03-03")
 rb.run = make_fake_run(event_true_on_last=True, bh_significant=False)
@@ -96,7 +101,7 @@ assert len(msgs) == 0, f"override 무시됨: BH 미통과인데 {len(msgs)}건 �
 print("[PASS] 4) upbit + require_significance=True override -> BH 미통과시 알림 억제 확인")
 
 # --- krx인데 require_significance=False로 override (즉시 알림) ---
-krx_loose_item = {"market": "krx", "symbol": "000660", "label": "SK하이닉스",
+krx_loose_item = {"market": "krx", "symbol": "000660", "label": "SK하이닉스", "signal_alerts": True,
                    "require_significance": False}
 _state_box["last_date"] = pd.Timestamp("2024-03-04")
 rb.run = make_fake_run(event_true_on_last=True, bh_significant=False)

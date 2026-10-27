@@ -48,7 +48,8 @@ def portfolio_returns(weights: pd.DataFrame, closes, *, fill_missing_weight: flo
     missing = [c for c in weights.columns if c not in px.columns]
     if missing:
         raise KeyError(f"종가가 없는 종목: {missing}")
-    rets = px[cols].pct_change()
+    # fill_method=None: 결측 종가를 앞 값으로 메워 '0 수익'으로 만들지 않는다(구버전 pandas 기본값은 pad).
+    rets = px[cols].pct_change(fill_method=None)
     w = weights[cols].reindex(rets.index).fillna(fill_missing_weight).astype(float)
     w_prev = w.shift(1)                      # t-1 마감 비중을 t 수익률에 적용
     contrib = w_prev * rets

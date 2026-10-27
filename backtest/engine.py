@@ -152,7 +152,7 @@ def event_returns(df: pd.DataFrame, event_col: str, horizon: int, direction: int
     t-stat) 이전 단계 그대로, 이벤트 발생일을 인덱스로 하는 pd.Series로 반환한다.
 
     event_study()는 이 값을 바로 평균·표준편차·t-stat으로 뭉개버리는데,
-    여러 종목을 풀링하거나(research.param_search.pool_event_returns) IS/OOS
+    여러 종목을 풀링하거나 IS/OOS
     기간으로 나누는 등 "집계 전" 원시 이벤트 수익률이 필요한 곳(파라미터
     탐색·횡단면 풀링)에서 쓰기 위해 이 단계를 공개 함수로 뺐다. 인자 의미는
     event_study()/forward_return()과 완전히 동일하다.
@@ -356,7 +356,7 @@ def compare_all(dfs_by_indicator: dict[str, pd.DataFrame], horizons=(1, 3, 5, 10
     dsr_threshold: significant_dsr 판정 임계값(기본 0.95 = 통상적인 5% 유의수준).
     extra_trials: 이 호출 바깥에서 이미 시도한 검정 횟수. compare_all은 자기가
         수행한 검정 수(요약표 행 수)밖에 모르는데, 실제로는 파라미터 탐색
-        (run_param_search)이나 종목을 바꿔가며 돌린 횟수까지 전부 "시도"에
+        (파라미터 탐색)이나 종목을 바꿔가며 돌린 횟수까지 전부 "시도"에
         포함되어야 선택편의가 제대로 반영된다. 예를 들어 파라미터 조합 500개를
         미리 훑어본 뒤 제일 좋은 걸로 이 함수를 불렀다면 extra_trials=500을
         넘겨야 한다. 기본 0은 "이 호출이 전부"라는 가장 낙관적인 가정이므로,

@@ -55,6 +55,9 @@ def items_to_rows(items: list[dict]) -> list[dict]:
             "종목코드": it["symbol"],
             "이름": it.get("label", ""),
             "강도": STRENGTH_LABELS.get(it.get("require_significance"), STRENGTH_LABELS[None]),
+            # 2026-10 리스크 중심: 비중(자산 대비, 숏은 음수)과 신호 알림 on/off. 비중이 없으면 None(동일비중 처리)
+            "비중": it.get("weight"),
+            "신호알림": bool(it.get("signal_alerts", False)),
         }
         for it in items
     ]
@@ -77,6 +80,11 @@ def rows_to_items(rows: list[dict]) -> list[dict]:
         req = _STRENGTH_VALUES.get(row.get("강도"))
         if req is not None:
             item["require_significance"] = req
+        w = row.get("비중")
+        if w is not None and not (isinstance(w, float) and w != w):      # NaN(빈 칸)은 '미지정'
+            item["weight"] = float(w)
+        if bool(row.get("신호알림", False)):
+            item["signal_alerts"] = True
         out.append(item)
     return out
 

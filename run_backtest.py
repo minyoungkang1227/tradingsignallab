@@ -565,7 +565,7 @@ def build_parser():
                          "이번 실행에서 검증하는 전체 신호x방향x보유기간 조합을 한꺼번에 놓고 보정한다. "
                          "기본 0.10(10%%)")
     p.add_argument("--factor-csv", dest="factor_csv", default=None,
-                    help="build_kr_factors.py로 만든 SMB/HML/WML csv 경로. 지정하면 4~5단계(팩터 "
+                    help="외부에서 만든 SMB/HML/WML csv 경로(index=월말 날짜). 지정하면 5단계(팩터 "
                          "구성은 이미 끝난 csv를 읽는 것으로 대체, 팩터 조정 알파 검증)와 7단계(규칙 "
                          "기반 판단)까지 이어서 실행하고 output/judgment.csv를 저장한다. "
                          "--market upbit이면 KRX 전용 팩터라 자동으로 무시(4~5단계 스킵)된다.")

@@ -37,7 +37,7 @@ VOL_REGIME_KR = {"high_vol": "고변동", "low_vol": "저변동"}
 def realized_vol(df: pd.DataFrame, vol_len: int = 20, close_col: str = "close") -> pd.Series:
     """최근 vol_len개 일간수익률의 표본표준편차(ddof=1). 앞의 vol_len봉은 NaN."""
     c = df[close_col].astype(float)
-    return c.pct_change().rolling(vol_len, min_periods=vol_len).std(ddof=1)
+    return c.pct_change(fill_method=None).rolling(vol_len, min_periods=vol_len).std(ddof=1)
 
 
 def classify_from_vol(vol: pd.Series, hi_q: float = 0.6, lo_q: float = 0.4,

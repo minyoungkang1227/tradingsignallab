@@ -1,8 +1,8 @@
 """
 data/collect.py 배관 검증: 수집 계약 3원칙(표준화된 출력 / fetched_at 등
 메타데이터 attrs / 종목 하나 실패해도 나머지는 계속 수집)이 실제로
-지켜지는지, 그리고 run_advisor.py / run_param_search.py가 이 공통 계층으로
-정상 리팩터됐는지 확인한다.
+지켜지는지 확인한다. (run_advisor/run_param_search 위임 검사는 2026-10 리스크 중심
+재구성에서 해당 스크립트와 함께 제거. 지금 이 계층을 쓰는 진입점은 run_risk.py.)
 """
 import numpy as np
 import pandas as pd
@@ -60,29 +60,4 @@ assert "OK1" in result2.ok and "SHORT" not in result2.ok
 assert "데이터 부족" in result2.failed["SHORT"]
 print("[OK] collect_universe(): 표본 부족(min_len 미만) 종목도 실패로 분류")
 
-# ---------------------------------------------------------------------------
-# 4) run_advisor.py / run_param_search.py가 collect_universe로 정상 위임하는지
-#    (fetch 함수를 몽키패치해서 실제 네트워크 없이 확인)
-# ---------------------------------------------------------------------------
-import types
-import run_param_search as rps
-
-fake_args = types.SimpleNamespace(market="upbit", unit="day", count=100, minute_unit=60,
-                                   symbols="OK1,BAD,OK2", start=None, end=None)
-rps._fetch_one_symbol = lambda symbol, args: (_ for _ in ()).throw(RuntimeError("boom")) \
-    if symbol == "BAD" else make_df(n=100)
-dfs = rps._load_symbols(fake_args)
-assert set(dfs.keys()) == {"OK1", "OK2"}, "run_param_search._load_symbols가 collect_universe로 정상 위임돼야 함"
-print("[OK] run_param_search._load_symbols(): collect_universe 위임 후에도 종목 하나 실패가 전체를 죽이지 않음")
-
-import run_advisor as ra
-
-ra._load_symbol = lambda market, symbol, args: (_ for _ in ()).throw(RuntimeError("boom")) \
-    if symbol == "BAD" else make_df(n=100)
-fake_args2 = types.SimpleNamespace(market="upbit", symbols="OK1,BAD,OK2", symbol_file=None,
-                                    unit="day", count=100, minute_unit=60, start=None, end=None)
-dfs2 = ra._load_universe(fake_args2)
-assert set(dfs2.keys()) == {"OK1", "OK2"}, "run_advisor._load_universe가 collect_universe로 정상 위임돼야 함"
-print("[OK] run_advisor._load_universe(): collect_universe 위임 후에도 종목 하나 실패가 전체를 죽이지 않음")
-
-print("\nSMOKE TEST (data/collect.py 수집 계약 + run_advisor/run_param_search 리팩터) OK")
+print("\nSMOKE TEST (data/collect.py 수집 계약) OK")

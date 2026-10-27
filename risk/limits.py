@@ -162,7 +162,7 @@ def apply_controls(weights: pd.DataFrame, closes, limits: DerivedLimits, *, alph
     w_raw = weights.reindex(px.index).fillna(0.0).astype(float)[cols]
     r_raw = portfolio_returns(w_raw, px)
     es = compute_var(r_raw, method, alpha, window)["es"]            # ES[t]: t-1까지 정보
-    sym_vol = pd.DataFrame({c: ewma_vol(px[c].pct_change(), lam) for c in cols})   # σ_i[t]: t-1까지 정보
+    sym_vol = pd.DataFrame({c: ewma_vol(px[c].pct_change(fill_method=None), lam) for c in cols})   # σ_i[t]: t-1까지 정보
 
     n = len(px.index)
     w_out = np.zeros((n, len(cols)))

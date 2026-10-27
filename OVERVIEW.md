@@ -41,14 +41,12 @@ Pine Script 지표(기관 변동 캔들, Delta Trading, Big Sales, Ultimate RSI,
       benjamini_hochberg()로 다중 검정 보정 (p_value, significant_bh)
       → 신호별 순방향수익률 평균·표준편차·t-stat·p-value·significant_bh, 누적수익률 곡선
       ▼
-[4] 팩터 구성 (별도 데이터 소스 — KRX 전체 유니버스 필요, 코인은 자동 스킵)
-      factors/kr_fama_french.py: compute_smb_hml(), compute_wml()
-      delisted_return 옵션으로 상장폐지 종목 전손 처리 (생존 편향 부분 완화)
-      → SMB, HML, WML 월별 시계열 (Fama-French 1993 + Carhart 1997)
+[4] 팩터 구성 — 2026-10 제거 (factors/, build_kr_factors.py: 실행이 검증된 적이 없어 삭제, git 이력에 있음)
+      외부에서 만든 SMB/HML/WML csv를 --factor-csv로 주면 [5]가 그대로 동작
       ▼
-[5] 팩터 조정 알파 검증 (코인은 자동 스킵)
+[5] 팩터 조정 알파 검증 (선택 — --factor-csv 없으면 '해당없음'으로 건너뜀, 코인은 자동 스킵)
       backtest/engine.py: factor_adjust(), event_alpha()
-      [3]의 이벤트 수익률을 [4]의 SMB/HML/WML에 OLS 회귀 (merge_asof로 날짜 매칭)
+      [3]의 이벤트 수익률을 외부 SMB/HML/WML에 OLS 회귀 (merge_asof로 날짜 매칭)
       모멘텀 필터 사용 시 WML 자동 제외(이중차감 방지)
       → alpha, alpha_t_stat (팩터로 설명 안 되는 순수 예측력)
       ▼
@@ -98,13 +96,13 @@ Pine Script 지표(기관 변동 캔들, Delta Trading, Big Sales, Ultimate RSI,
 | 1. 지표 신호 생성 | `indicators/*.py` (5종) | 완료 |
 | 2. 신호 필터링 | z-score, momentum.py, liquidity.py | 완료 |
 | 3. 이벤트 스터디 | `backtest/engine.py` | 완료 (거래비용·슬리피지(고정/동적)·체결지연·Newey-West·다중검정 보정 반영) |
-| 4. 팩터 구성 | `factors/kr_fama_french.py` | 완료 (네트워크 필요, 실행 미검증; 생존편향 부분 완화; 코인은 자동 스킵) |
-| 5. 팩터 조정 알파 | `backtest/engine.py::factor_adjust/event_alpha` | 완료 (합성데이터로 검증; 모멘텀 필터 시 WML 자동 제외; 코인은 자동 스킵) |
+| 4. 팩터 구성 | (제거됨, 2026-10) | 실행 미검증 상태로 남아 있어 삭제. 외부 csv(`--factor-csv`)로 대체 가능 |
+| 5. 팩터 조정 알파 | `backtest/engine.py::factor_adjust/event_alpha` | 완료 (합성데이터로 검증; 외부 팩터 csv가 있을 때만; 기본 '해당없음') |
 | 6. 리포팅 | `run_backtest.py` | 완료 (summary.csv/event_curves.png/judgment.csv) |
 | 7. 판단 (규칙 기반) | `decision/rule_based.py` | 완료 (LLM 미사용, 다중검정 보정 결과까지 반영) |
 | 8. 확장 검증 | `backtest/profiles.py`, `oos.py`, `walkforward.py`, `regime.py`, `triple_barrier.py` | 코드·합성 테스트 완료. **실데이터 결과 없음** |
 | 9. 포트폴리오 | `backtest/portfolio.py`, `run_portfolio.py` | 코드·합성 테스트 완료. **실데이터 결과 없음** |
-| 10. 알림·대시보드 | `alerts/`, `app.py` | 구성됨(운영 이력은 Actions 로그). 대시보드에 OOS 등 신규 열은 아직 없음 |
+| 10. 알림·대시보드 | `alerts/check_risk.py`(기본), `check_signals.py`(옵션), `app.py` | 리스크 요약·한도 위반 알림으로 전환(2026-10). 운영 이력은 Actions 로그 |
 
 이 저장소에 없는 것: 실거래 주문 자동화(업비트 API·TVExtBot 웹훅 연동), LLM 기반 판단
 레이어(도입해도 규칙 기반을 대체하지 않고 나란히 비교할 예정), 머신러닝 기반 신호 성공확률
@@ -316,44 +314,6 @@ python run_backtest.py --market krx --symbol 005930 --start 20220101 --end 20260
 
 ---
 
-## 5. [4]단계 — 한국시장 팩터 구성 (`factors/kr_fama_french.py`)
-
-Fama & French(1993) SMB(사이즈)·HML(가치)와 Carhart(1997) WML(모멘텀) 팩터를
-KRX 데이터로 직접 구성합니다. 지표들의 초과수익이 순수한 신호 예측력인지,
-소형주·가치주·모멘텀 팩터 프리미엄의 재포장인지 가르는 데 씁니다.
-
-- KOSPI≈NYSE, KOSDAQ≈NASDAQ 대응관계로 사이즈·BE/ME breakpoint를 KOSPI 종목만으로 계산
-- BE/ME는 회계데이터 대신 PBR의 역수(1/PBR)로 근사
-- 원 논문은 연 1회(6월 말) 리밸런싱하지만 여기서는 월말 리밸런싱으로 단순화
-- WML은 사이즈×형성기간모멘텀(t-12개월~t-1개월 수익률, 최근 1개월은 단기반전
-  회피를 위해 제외) 2×3 정렬로 승자-패자 롱숏 팩터 구성
-
-```bash
-python build_kr_factors.py --start 20220101 --end 20240101 --output output/kr_factors.csv
-```
-
-### 생존 편향 부분 완화 (`--delisted-return`)
-
-리밸런싱 구간 도중 상장폐지·장기 거래정지된 종목은 다음 시점 조회에서 사라집니다.
-이전 동작은 이런 종목을 조용히 빼고 남은 종목끼리만 가중치를 재정규화했는데,
-상장폐지는 거의 항상 큰 손실로 끝나므로 이렇게 빼면 팩터 수익률이 실제보다
-좋게(위로) 편향됩니다.
-
-```bash
-python build_kr_factors.py --start 20220101 --end 20240101 \
-  --output output/kr_factors.csv --delisted-return -1.0
-```
-
-`_value_weighted_return(weight, close_t0, close_t1, delisted_return=None)`이
-이걸 처리합니다. 기본값 `None`은 이전 동작(조용히 제외)과 동일하고, 숫자(예:
-`-1.0`)를 주면 그 종목에 지정한 수익률을 강제로 대입합니다.
-
-한계: "구간 중간에 사라진 종목을 조용히 빼지 않는다"는 부분 완화이지 완전한
-해소는 아닙니다. `fetch_cross_section()`이 애초에 조회 시점에 pykrx가 반환하지
-않는 종목까지 포착하지는 못합니다.
-
----
-
 ## 6. [5]단계 — 팩터 조정 알파 (`factor_adjust`, `event_alpha`)
 
 이벤트 스터디 수익률을 SMB/HML/WML에 OLS 회귀시켜, 팩터로 설명되지 않는 순수
@@ -365,7 +325,7 @@ python build_kr_factors.py --start 20220101 --end 20240101 \
 - `event_alpha(df, event_col, factor_df, horizon=20, entry_lag=..., entry_col=..., cost_bps=..., slippage_bps=...)` —
   `event_study()`와 같은 인터페이스로 감싼 편의 함수. [3]단계와 동일한 체결
   가정(entry_lag/entry_col/cost_bps/slippage_bps)을 넘겨야 두 단계가 일관됩니다.
-- `combine_factors(smb_hml_df, wml_df)`로 SMB/HML과 WML을 하나의 `factor_df`로 결합.
+- 외부 팩터 csv(SMB/HML/WML 열)를 `--factor-csv`로 넘기면 `factor_df`로 읽어 결합.
 
 ### 회귀가 성립하지 않을 때 — 숫자를 지어내지 않는다
 
@@ -413,7 +373,7 @@ TradingAgents(Xiao et al. 2024)류 LLM 멀티에이전트 판단 구조를 참�
 1. 표본(`n_events`)이 너무 적음 → **보류**
 2. 원 신호 t-stat이 `+t_threshold`에 못 미침 → **기각** (t<0은 수익률에 이미 방향이 곱해진 값이라
    "유의하게 손실 나는 신호"이므로 절댓값이 아니라 부호를 본다. `decision/gate.py` 한 곳에서
-   처리하므로 advisor·알림·규칙판정·`run_param_search.py`의 IS/OOS 통과 판정이 같은 기준을 쓴다)
+   처리하므로 알림·규칙판정이 같은 기준을 쓴다)
 3. `bh_significant`가 `False`로 명시됨 → **기각**(개별 t-stat은 유의해도 다중검정
    보정을 통과하지 못함 — p-hacking 가능성)
 4. 알파 t-stat 계산 불가(회귀 표본 부족) → **보류**
@@ -449,140 +409,13 @@ Benjamini-Hochberg(위 3번 분기, `significant_bh`)가 "사후에" 여러 검�
 
 ---
 
-## 8. IS/OOS 파라미터 탐색 (`research/param_search.py`, `run_param_search.py`)
+## 8~9. (제거됨) IS/OOS 파라미터 탐색 · 매수/보유/매도 어드바이저
 
-지금까지 `--mom-threshold`/`--liq-threshold` 같은 값은 논문 근거로 고른
-고정 상수였습니다. 이 값을 데이터에서 "찾고" 싶다면 곧바로 세 가지 문제가
-생깁니다: (1) 파라미터가 여러 개라 조합을 다 시도하면 폭발한다, (2) IS
-구간에서 t-stat이 제일 높은 조합 하나를 고르는 순간 그 자체가 또 다른
-다중검정(수백 개 조합 중 우연히 좋아 보인 걸 고른 위험)이 된다, (3) 종목
-하나로만 보면 표본(`n_events`)이 몇십 개 수준이라 작다. `research/param_search.py`는
-이 세 문제를 각각 겨냥한 도구를 제공하고, `run_param_search.py`가 이걸 하나의
-검증 절차로 묶습니다.
-
-- **좌표별 순차탐색(Anchor Search, `sequential_anchor_search`)** — 파라미터
-  P개 × 후보 C개를 전부 조합하는 그리드서치(C^P번 평가)를 피하고, 한 번에
-  하나씩만 바꿔가며 최선의 값을 찾는다(P×C번). 대신 파라미터 간 상호작용은
-  놓칠 수 있다는 한계가 있다 — 표본이 작은 지금 상황에서는 조합폭발·소표본
-  과최적화 쪽 위험이 더 크다고 보고 택한 절충.
-- **Peak 대신 Plateau 탐색(`detect_plateau`)** — IS에서 성과가 가장 좋은
-  후보 1개가 아니라, 성과 상위 `top_frac`(기본 20%) 후보들이 파라미터 격자
-  상에서 이어진 구간(plateau)을 이루는지 본다. 이어져 있으면 그 구간의
-  중앙값을 "강인한" 값으로 채택하고, 여러 구간으로 흩어져 있으면(peak, 전형적인
-  과최적화 스파이크) 그 파라미터는 탐색하지 않은 것으로 보고 기본값을 유지한다.
-  다만 이것도 IS 정보로 고른 것이라 편향이 완전히 사라지는 건 아니다 — 진짜
-  확인은 여전히 OOS에서 한다.
-- **시도 횟수(K)를 반영한 임계값(`bonferroni_t_threshold`,
-  `deflated_t_threshold_sqrt2lnk`)** — Bailey, Borwein, López de Prado &
-  Zhu(2014)/Harvey, Liu & Zhu(2016)가 쓰는 두 방식을 각각 구현했다. 본페로니는
-  `p_value_from_t`를 이분법으로 역산해 정확하게 계산하고, `sqrt(2*ln K)`는
-  관행적으로 많이 쓰이지만 K가 작을 때(대략 50 미만) 근사오차가 크다 — 그래서
-  둘 다 계산해 나란히 보여준다. K는 그리드 전체 칸 수가 아니라 순차탐색이
-  실제로 평가한 횟수(P×C + 최종 재평가 1회)를 쓴다.
-- **횡단면 풀링 + 날짜 클러스터 강건 표준오차(`pool_event_returns`,
-  `backtest.engine.cluster_robust_t_stat`)** — 여러 종목의 이벤트 수익률을
-  하나의 표본으로 합쳐 n을 늘리되, 같은 날 여러 종목에서 동시에 이벤트가
-  몰리는 횡단면 상관을 무시하면 t-stat이 다시 부풀려진다. Newey-West가
-  "같은 종목 안에서 시간이 겹치는" 문제를 보정하는 것과 같은 원리를 "여러
-  종목이 같은 날짜에 겹치는" 축에 적용한 1-way 클러스터 강건 표준오차를 쓴다.
-- **IS/OOS 분할(`split_is_oos`)** — 지표(모멘텀·유동성 롤링윈도우 포함)는
-  항상 전체 기간으로 미리 계산해두고, 이벤트 날짜만 `--split-date` 기준으로
-  IS(≤)/OOS(>)로 자른다 — 그래야 OOS 구간 초반이 롤링윈도우 워밍업 때문에
-  표본을 잃지 않는다.
-
-전체 절차는 `run_param_search.py`가 실행한다: 여러 종목의 IS 구간에서
-`mom_threshold`·`liq_threshold`를 순차탐색 → plateau 판정 → 확정된 조합의
-IS t-stat이 Bonferroni/sqrt(2lnK) 중 더 엄격한 기준을 통과하는지 확인 →
-통과하면(또는 통과하지 못해도 참고용으로) 탐색 과정이 전혀 들여다보지 않은
-OOS 구간에서 같은 조합의 t-stat을 계산해 재현되는지 확인.
-
-```bash
-python run_param_search.py --market krx --symbols 005930,000660,035420,051910,207940 \
-  --start 20180101 --end 20260901 --split-date 20240101 \
-  --target-signal "델타트레이딩-골든크로스" --target-horizon 5
-```
-
-합성 데이터(자기상관을 넣은 가짜 종목 3~5개)로 배관 전체가 끝까지 도는 건
-확인했지만(`_smoke_test_param_search.py`, `_smoke_test_run_param_search.py`),
-진짜 유의미한 결과(IS/OOS 모두 통과하는 파라미터가 실제로 있는지)는 이
-샌드박스에서 pykrx/업비트 네트워크 접속이 막혀 있어 확인할 수 없다 — 실제
-KRX/업비트 데이터로는 사용자 환경에서 직접 돌려봐야 한다. 참고로 합성 데이터
-실행 결과는 대체로 "기각"(IS 단계부터 시도 횟수 보정 기준 미달)이 나오는데,
-이건 합성 데이터에 애초에 진짜 신호를 심어두지 않았으니 당연한 결과이지
-배관 자체의 문제가 아니다.
-
-**주의(범위)**: 이 스크립트는 `mom_threshold`/`liq_threshold` 두 값만 탐색한다.
-`id_z_threshold`처럼 순서가 있는 다른 파라미터로 확장하고 싶으면
-`sequential_anchor_search()`에 넘기는 `param_grid`만 늘리면 되지만,
-`id_vol_mode`("multiple" vs "zscore")처럼 순서가 없는 범주형 파라미터는
-plateau 개념 자체가 성립하지 않으므로 이 프레임워크 밖에서(논문 근거로) 그냥
-고정해두는 걸 권장한다.
-
----
-
-## 9. 질의응답형 매수/보유/매도 어드바이저 (`advisor/`, `run_advisor.py`)
-
-지금까지의 [1]~[7]단계는 전부 "과거에 이 신호가 통계적으로 유의미했는가"를
-검증하는 레이어였다. `advisor/`는 그 검증 결과를 "지금 이 순간"에 적용해,
-"이 종목/코인 지금 사야 돼, 팔아야 돼, 들고 있어야 돼?"라는 질문에 답하고,
-같은 기준으로 다른 유망 종목까지 추천한다. 투자자문이 아니라 "지금까지
-검증한 통계가 이 순간 이 종목에 대해 뭐라고 말하는지"를 근거와 함께 요약해
-보여주는 도구라는 점은 변하지 않는다 — verdict만 내지 않고 항상 어떤 신호가
-어떤 근거·t-stat으로 검증됐는지를 같이 보여준다.
-
-### 신호 합치기 — 보수적 다수결
-
-한 종목에 여러 지표의 신호가 동시에(때로는 충돌 방향으로) 뜰 수 있다.
-`advisor/evaluator.py`의 `evaluate_symbol()`은 가장 최근 봉에서 활성화된
-신호들 중 "검증된"(historically `|t-stat| >= t_threshold`, 기본 3.0) 것만
-추려서, 검증된 강세 신호 수와 검증된 약세 신호 수를 비교한다. 많은 쪽으로
-판정하고, 동률이거나(0대0 포함) 애매하면 무조건 **보유**로 떨어진다 —
-`decision/rule_based.py`의 "애매하면 보류" 철학과 같은 보수적 기본값이다.
-
-### 신뢰도 판단 — 하이브리드(종목 자체 vs 횡단면 풀링)
-
-"이 신호를 얼마나 믿을지"는 그 종목 자신의 과거 이벤트 수(`n_events`)가
-`--min-own-events`(기본 10) 이상이면 그 종목 자체 통계를 쓰고, 부족하면(신규
-상장주·알트코인처럼 역사가 짧은 경우) 같은 신호 유형을 여러 종목에서 풀링한
-횡단면 통계(`advisor/universe_scan.py`의 `compute_pooled_stats()` —
-[8]절과 같은 `cluster_robust_t_stat()`으로 계산)로 대체한다. 표본이 부족하면
-"판단 불가"로 손 놓는 대신 "이 신호 유형은 다른 종목들에서는 대체로 어떠했는가"로
-보수적으로 보강하되, 이건 "신호의 신뢰도가 종목을 넘어 전이된다"는 가정을
-깔고 있다는 점이 있어 evidence에 항상 `own`/`pooled`/`미검증(표본부족)` 중
-어느 근거를 썼는지 표시한다.
-
-### 유니버스 스캔 — 배치 캐싱
-
-"다른 유망 종목"을 추천하려면 KRX 300이나 업비트 상위 코인 전체를 훑어야
-하는데, 질문이 들어올 때마다 수백 종목을 실시간으로 다 스캔하면 너무 느리고
-API 호출량도 커진다. 그래서 `run_advisor.py --mode scan`을 배치로(하루 한 번
-정도) 돌려 종목별 매수/보유/매도 판정과 신호유형별 풀링 통계를
-`output/advisor_scan.csv`/`output/advisor_pooled_stats.csv`로 캐시해두고,
-`--mode query`는 질문받은 종목 하나만 실시간으로 평가한 뒤 이 캐시에서
-"다른 유망 종목"(검증된 신호가 뜬, verdict≠보유인 종목들을 강도 점수순으로)을
-읽어와 같이 보여준다.
-
-```bash
-# 1) 유니버스 스캔(캐시 생성) — 하루에 한 번 정도
-python run_advisor.py --mode scan --market krx \
-  --symbols 005930,000660,035420,051910,207940,035720 \
-  --start 20200101 --end 20260901
-
-# 2) 개별 종목 질의 — 스캔 캐시가 있으면 다른 유망 종목도 같이 보여줌
-python run_advisor.py --mode query --market krx --symbol 005930 \
-  --start 20200101 --end 20260901
-```
-
-`--mode scan`/`--mode query` 모두 `run_backtest.py`와 같은 파라미터명
-(`--mom-filter`, `--liq-filter`, `--entry-lag` 등)을 쓴다 — "지금 뜬 신호"가
-과거에 검증했던 것과 정확히 같은 정의(같은 필터 임계값)를 쓰게 하기 위해서다.
-
-합성 데이터로 전체 배관(종목 평가 → 하이브리드 신뢰도 → 다수결 → 유니버스
-스캔 → 캐시 저장/재로딩 → CLI `scan`→`query` 순서 실행)까지
-`_smoke_test_advisor.py`로 검증했다. 다만 실제로 검증된 신호가 정말 잘 통하는
-종목을 찾아내는지는(진짜 신호 유무) 이 샌드박스에서 pykrx/업비트 네트워크가
-막혀 있어 확인할 수 없다 — 실제 데이터로는 사용자 환경에서 직접 스캔을
-돌려봐야 한다.
+2026-10 리스크 중심 재구성에서 research/param_search.py·run_param_search.py(IS/OOS 파라미터 탐색)와
+`advisor/`·`run_advisor.py`(어드바이저)를 삭제했습니다. 이유는 둘입니다. 리스크 관리 방향에서는 "어느 파라미터가
+제일 좋은가"와 "지금 사야 하나"가 핵심 질문이 아니고, 탐색 쪽에는 `split_is_oos`에 퍼지(purge)가 빠져 있어
+학습·검증 구간이 겹치는 누수가 있었습니다. 표본 외 검증은 `backtest/oos.py`(퍼지 적용)와 Walk-forward가 담당합니다.
+제거된 코드와 테스트는 git 이력(2026-10-27 이전 커밋)에 있습니다.
 
 ---
 
@@ -706,10 +539,26 @@ p < 0.05면 기각, 하나라도 기각이면 **부적합**, 전부 통과면 **
 
 ## 13. 알림·대시보드 (`alerts/`, `app.py`)
 
-GitHub Actions가 평일 16:10 KST(cron `10 7 * * 1-5` UTC)에 `alerts/check_signals.py`를 실행해 감시리스트
-(`alerts/watchlist.json`)의 신호를 확인하고 텔레그램으로 보냅니다. 국내주식은 공통 판정
-게이트(13-1절)를 통과한 신호만, 업비트 코인은 `require_significance`가 기본 꺼짐이라 즉시 알림입니다.
-동기화합니다. 토큰 등 인증정보는 GitHub Secrets에만 두며, 채팅이나 코드에 노출되면 즉시 재발급합니다.
+**2026-10부터 알림의 기본은 리스크입니다.** 평일 16:10(KST) GitHub Actions가 `alerts/check_risk.py`를 돌려 시장(krx /
+upbit)마다 한 통씩 보냅니다.
+
+- 일일 리스크 요약: 내일 1일 VaR·ES(FHS 97.5%), 오늘 포트폴리오 손익과 ES 초과 여부, 리스크 모델 백테스트 판정
+  (적합/부적합/판정불가, 초과 횟수, Kupiec p), 한도 상태(ES 축소 배율, 낙폭/한도). 조용한 날에도 보냅니다 —
+  "시스템이 살아 있다"는 하트비트이자 매일 보는 숫자여야 이상이 눈에 띄기 때문입니다.
+- 한도 위반: 오늘 손실 > ES, 낙폭 서킷 작동 중, 종목 리스크 예산 초과가 있으면 머리에 ⚠와 위반 목록을 붙입니다.
+- 데이터 품질 중단: 종목 하나라도 품질 게이트에서 중단되면 그 시장의 VaR를 내지 않고 중단 사실을 보냅니다.
+  모순된 데이터로 계산한 VaR를 보내는 것보다 안 보내는 것이 낫습니다.
+- 비중은 `watchlist.json` 항목의 `weight`(자산 대비, 숏은 음수)입니다. 한 시장에서 하나라도 비어 있으면 그 시장은
+  동일비중으로 봅니다. `"risk": false`인 항목은 리스크 포트폴리오에서 뺍니다. 같은 날짜 요약은 두 번 보내지 않습니다
+  (`state.json`의 `risk:<market>`).
+- 숫자는 `risk/` 모듈을 그대로 불러 계산합니다 — 알림이 보는 VaR와 `run_risk.py`가 보는 VaR가 같아야 합니다.
+
+예전 신호 알림(`alerts/check_signals.py`)은 코드가 남아 있지만 기본 꺼짐입니다. watchlist 항목에
+`"signal_alerts": true`를 적은 종목만 처리하며, 그때의 기준은 아래 13-1절 공통 판정 게이트입니다.
+대시보드(`app.py`)의 감시리스트 편집기에 `비중`·`신호알림` 열이 있습니다.
+
+알림은 매매 추천이 아니고, VaR/ES는 미래 손실의 상한이 아닙니다. 토큰 등 인증정보는 GitHub Secrets에만 두며,
+채팅이나 코드에 노출되면 즉시 재발급합니다.
 
 ### 13-1. 공통 판정 게이트 (`decision/gate.py`)
 
@@ -719,7 +568,7 @@ GitHub Actions가 평일 16:10 KST(cron `10 7 * * 1-5` UTC)에 `alerts/check_sig
 |---|---|
 | `decision/rule_based.py` | 표본 ≥ 10, \|t\| ≥ 3.0, BH, 알파 \|t\| ≥ 3.0, 부호 일치 |
 | `alerts/check_signals.py` | BH, DSR (t 임계값도 표본수 기준도 없음) |
-| `advisor/evaluator.py` | \|t\| ≥ 임계값 (BH도 DSR도 알파도 없음) |
+| advisor/evaluator.py (2026-10 제거) | \|t\| ≥ 임계값 (BH도 DSR도 알파도 없음) |
 
 세 축(t 임계값·다중검정·알파) 전부에서 엇갈려서 누가 더 엄격한지 줄 세울 수조차 없었습니다.
 예를 들어 \|t\|=2.5이고 BH·DSR을 통과한 신호는 규칙판정에서는 기각인데 알림은 발송됐습니다.
@@ -775,22 +624,16 @@ python run_backtest.py --market upbit --symbol KRW-BTC --unit day --count 1000
 # 국내 주식 (SK하이닉스, 2022~2026 일봉)
 python run_backtest.py --market krx --symbol 000660 --start 20220101 --end 20260901
 
-# 한국시장 팩터 구성 (생존 편향 부분 완화 포함, KRX 전용)
-python build_kr_factors.py --start 20220101 --end 20240101 \
-  --output output/kr_factors.csv --delisted-return -1.0
-
 # 가장 현실적인 실행 예시: Kyle(1985) z-score 필터 + 모멘텀 필터 + 유동성 필터
 # (Amihud 2002) + 거래비용/동적 슬리피지/체결지연 + Newey-West 보정 + 다중검정
-# 보정 + 팩터 조정 알파·판단까지 전부 한 번에
-# (--mom-filter가 켜져 있으므로 팩터 회귀에서 WML은 자동 제외됨)
+# 보정 + 판단까지 전부 한 번에 (팩터 조정 알파는 외부 csv가 있을 때만 --factor-csv로)
 python run_backtest.py --market krx --symbol 005930 --start 20220101 --end 20260901 \
   --id-vol-mode zscore --id-z-threshold 1.96 \
   --mom-filter --mom-threshold 0.7 \
   --liq-filter --liq-threshold 0.9 \
   --entry-lag 1 --entry-col open --cost-bps 36 \
   --dynamic-slippage --slippage-bps 5 --max-extra-slippage-bps 50 \
-  --newey-west --fdr 0.10 \
-  --factor-csv output/kr_factors.csv
+  --newey-west --fdr 0.10
 ```
 
 ```bash
@@ -845,18 +688,10 @@ backtest/execution_log.py  신호 실행 로그(CSV)
 alerts/              텔레그램 알림(check_signals, telegram, state, github_sync, config)
 app.py               Streamlit 대시보드
 tools/gen_option_table.py  argparse에서 옵션·기본값 표 생성(17절)
-factors/kr_fama_french.py  SMB/HML/WML 팩터 구성
-decision/gate.py           공통 판정 게이트 — 알림·어드바이저·규칙판정이 전부 여기를 쓴다
+decision/gate.py           공통 판정 게이트 — 알림·규칙판정이 전부 여기를 쓴다
 decision/rule_based.py     규칙 기반 판단 레이어(게이트에 팩터 알파까지 요구하는 래퍼)
-research/param_search.py   IS/OOS 파라미터 탐색 (anchor search, plateau, 시도횟수
-                     보정 임계값, 횡단면 풀링)
-advisor/             매수/보유/매도 어드바이저 (evaluator.py: 종목 평가·다수결,
-                     universe_scan.py: 풀링 통계·유니버스 스캔)
 run_backtest.py      전체 파이프라인 CLI 진입점
-run_param_search.py  IS/OOS 파라미터 탐색 CLI 진입점
-run_advisor.py       매수/보유/매도 어드바이저 CLI 진입점
 run_portfolio.py     포트폴리오 시뮬레이션 CLI 진입점
-build_kr_factors.py  팩터 구성 전용 CLI
 PIPELINE.md          파이프라인 아키텍처 문서(이 문서의 원본 중 하나)
 README.md            프로젝트 소개, 할 수 있는 일/입증되지 않은 일, 검증 현황
 ```
@@ -871,7 +706,6 @@ README.md            프로젝트 소개, 할 수 있는 일/입증되지 않은
 
 | 테스트 파일 | 검증 대상 |
 |---|---|
-
 | `_smoke_test_oos.py` | purge 구간 계산, 학습 선택→검증 유지 판정, test_end 창 |
 | `_smoke_test_deflated.py`, `_smoke_test_dsr_power.py`, `_smoke_test_compare_all_dsr.py` | DSR 계산, 검정력, compare_all 통합 |
 | `_smoke_test_triple_barrier.py`, `_smoke_test_barrier_study.py` | 트리플 배리어 청산 규칙·순차 거래·가격 포함 출력 |
@@ -894,7 +728,8 @@ README.md            프로젝트 소개, 할 수 있는 일/입증되지 않은
 | `_smoke_test_gate.py` | 공통 판정 게이트 층별 판정, 순서 우선 규칙, 해당없음/판정불가 구분, 세 진입점 일치 |
 | `_smoke_test_docs_sync.py` | OVERVIEW 옵션 대조표가 argparse 실제 정의와 일치하는지 |
 | `_smoke_test_execution_log.py` | 실행 로그 손계산, signal_id 결정성, 재실행 시 중복 없음 |
-| `_smoke_test_alerts.py`, `smoke_test_alerts.py`, `smoke_test_github_sync.py` | 알림 판정·상태 저장, GitHub 동기화(base64, 409 충돌), 네트워크 호출은 모킹 |
+| `_smoke_test_alerts.py`, `_smoke_test_github_sync.py` | 신호 알림 판정·기본 꺼짐·상태 저장, GitHub 동기화(base64, 409 충돌, 비중·신호알림 왕복), 네트워크 호출은 모킹 |
+| `_smoke_test_check_risk.py` | 리스크 알림: 비중 해석, 수치가 risk 모듈과 일치, 위반 감지·머리말, 시장별 한 통·중복 방지·risk:false 제외, 품질 중단 시 VaR 미발송 |
 
 ### 15-2. 실제 시장 데이터 검증 현황 (합성 테스트와 별개)
 
@@ -902,7 +737,6 @@ README.md            프로젝트 소개, 할 수 있는 일/입증되지 않은
 |---|---|
 | 신호별 이벤트 스터디 (실데이터) | 사용자 환경에서 실행 필요. 기록된 결과 없음 |
 | OOS·Walk-forward·국면·포트폴리오 (실데이터) | 미실시. 지앤비에스 에코(382800) Colab은 데이터 품질 점검에서 멈춰 있음 |
-| 팩터 SMB/HML/WML | 실행 미검증 (pykrx 전종목 조회 필요) |
 | KRX Open API·ECOS | 실제 응답 필드·날짜 형식 대조 미검증 |
 | 프로필 비용 수치 (KRX 36bp, 업비트 10bp) | 저장소 참고값. 현재 세율로 확인되지 않음 |
 
@@ -910,46 +744,30 @@ README.md            프로젝트 소개, 할 수 있는 일/입증되지 않은
 
 ---|---|
 | `_smoke_test.py` | 5개 지표 + 필터 전체 파이프라인이 정상 동작하는지 |
-| `_smoke_test_factors.py` | SMB/HML 계산식이 사이즈·가치효과를 정확히 분리하는지 |
-| `_smoke_test_wml.py` | WML(모멘텀 팩터) 계산 정확성 |
 | `_smoke_test_factor_adjust.py` | OLS 회귀가 알파·베타를 오차 1e-9 이내로 복원하는지, 표본 부족·설계행렬 특이 시 예외 없이 NaN+사유 |
 | `_smoke_test_decision.py` | 규칙 기반 판정 7가지 분기 전부(bh_significant 관련 포함) |
 | `_smoke_test_cost_entry.py` | 거래비용·t+1 체결지연 수치 정확성 |
-| `_smoke_test_survivorship.py` | 생존 편향 완화(전손 반영) 수치·방향성 정확성 |
 | `_smoke_test_bh.py` | Benjamini-Hochberg 다중검정 보정 정확성 |
 | `_smoke_test_nw_slippage.py` | 슬리피지 합산 차감, Newey-West 보정, 겹치는 이벤트 제거 정확성 |
-| `_smoke_test_run_judgment.py` | 코인 자동 스킵, 모멘텀 필터 시 WML 자동 제외 로직 |
+| `_smoke_test_run_judgment.py` | 코인 자동 스킵, 모멘텀 필터 시 WML 자동 제외 로직(외부 팩터 csv 경로) |
 | `_smoke_test_liquidity.py` | Amihud 비유동성·퍼센타일 계산, 유동성 필터, 동적 슬리피지 선형매핑, `pd.Series` 슬리피지 반영 정확성 |
-| `_smoke_test_param_search.py` | plateau/peak 판정, anchor search 평가횟수·정확성, Bonferroni/sqrt(2lnK) 임계값, cluster-robust t-stat, event_returns/풀링/IS·OOS 분할 배관 |
-| `_smoke_test_run_param_search.py` | run_param_search.py 전체 배관(여러 종목 로딩→탐색→plateau→임계값→IS/OOS 검증)이 끝까지 도는지 |
-| `_smoke_test_advisor.py` | 활성 신호 감지, 하이브리드 신뢰도(own/pooled) 전환, 보수적 다수결, 유니버스 스캔 정렬, run_advisor.py CLI(scan→query 캐시 재사용)까지 전체 배관 |
-| `_smoke_test_collect.py` | 수집 계약 3원칙(attrs 메타데이터, 종목 하나 실패해도 계속 수집, 표본부족도 실패로 분류) + run_advisor/run_param_search가 collect_universe로 정상 위임됐는지 |
+| `_smoke_test_collect.py` | 수집 계약 3원칙(attrs 메타데이터, 종목 하나 실패해도 계속 수집, 표본부족도 실패로 분류) |
+| `_smoke_test_sign_gate.py` | 게이트·규칙판정의 부호 반영(손실 방향 유의 신호는 기각) |
 
 ---
 
 ## 16. 다음에 할 만한 것
 
-0. `data/krx.py`의 `fetch_krx_open_api_ohlcv()`와 `data/ecos.py`는 실제 네트워크가
-   열린 환경에서 처음 실행할 때 응답 필드명(`_KRX_OPEN_API_FIELDS`)·날짜 형식을
-   실제 API 응답과 대조해 검증 필요(이 샌드박스는 네트워크가 막혀 있어 구조만
-   맞춰두고 실제 호출로는 검증하지 못함).
-1. 로컬/서버에서 실제 pykrx/업비트 데이터로 `run_param_search.py`를 KRX 종목
-   여러 개(또는 업비트 상위 코인)에 돌려서, IS 단계 시도횟수 보정 기준을
-   통과하고 OOS에서도 재현되는 `mom_threshold`/`liq_threshold` 조합이 실제로
-   존재하는지 첫 실측치 확인. (합성 데이터로는 배관만 검증됐고, 진짜 신호
-   유무는 확인 못한 상태.)
-2. 그 결과를 보고 LLM 기반 판단 도입 여부, 실거래 자동화(업비트 API·TVExtBot
-   웹훅) 착수 여부를 결정.
-3. 종목을 KRX 300/업비트 상위 20개 수준으로 더 넓혀 완전한 횡단면 확장(지금은
-   `run_param_search.py`가 사용자가 지정한 소수 종목만 풀링) — "몇 %의 종목에서
-   유의한 알파가 났는가" 같은 요약 통계까지 내면 논문 완성도가 더 올라감.
-4. `run_advisor.py --mode scan`을 KRX 300/업비트 상위 코인 전체로 실제 돌려서
-   (지금은 합성 데이터로 배관만 검증됨) 매수/보유/매도 어드바이저가 실제로
-   말이 되는 종목을 골라내는지 확인. 종목 자체 이력이 짧아 하이브리드
-   신뢰도(pooled 근거)에 의존하는 비율이 얼마나 되는지도 같이 살펴볼 것.
-5. 확률미분방정식 공부와 연결하고 싶다면, `forward_return`의 분포를 정규분포
-   가정 없이 부트스트랩으로 재검정하거나, GBM 대비 실제 수익률 분포의 두꺼운
-   꼬리(fat tail)를 비교하는 방향으로 확장 가능.
+0. `run_risk.py --controls`를 실제 시장 데이터(005930·000660·KRW-BTC)로 돌려 VaR 모델 적합/부적합, 초과 횟수,
+   도출된 한도와 통제 비용을 15-2 표에 기록. 리스크 중심 재구성의 첫 실데이터 근거.
+1. README "리스크 관리 구성" 표의 예정 항목 순서대로: 스트레스 테스트 → 포지션 사이징 → 포트폴리오 리스크(공분산
+   축소·기여도) → 모니터링·대조(알림을 신호에서 한도 위반으로 전환) → 모델 리스크(파라미터 민감도).
+2. `data/krx.py`의 `fetch_krx_open_api_ohlcv()`와 `data/ecos.py`는 실제 네트워크에서 응답 필드명·날짜 형식을 대조해
+   검증 필요.
+3. 신호 쪽: 실제 데이터로 OOS·Walk-forward·포트폴리오를 한 번씩 돌려 결과 기록. 그 전까지 신호는 "검증 도구를
+   통과시켜 본 적이 없는 후보".
+4. 확률미분방정식 공부와 연결: 수익률 분포의 두꺼운 꼬리를 정규(GBM) 대비 비교하고, FHS의 표준화 손실 분포가
+   시간에 따라 안정적인지 검정하는 방향.
 
 ---
 
@@ -1025,7 +843,7 @@ README.md            프로젝트 소개, 할 수 있는 일/입증되지 않은
 | `run_backtest.py` | `--regime-z-thr` | `0.5` | 국면 분류: 최근 수익률의 방향성(변동성 대비) 임계값 |
 | `run_backtest.py` | `--regime-min-n` | `5` | 국면 일관성 판단에 쓸 국면별 최소 관측 수 |
 | `run_backtest.py` | `--fdr` | `0.1` | 다중 검정 보정(Benjamini-Hochberg) 목표 false discovery rate |
-| `run_backtest.py` | `--factor-csv` | `없음` | build_kr_factors.py로 만든 SMB/HML/WML csv 경로 |
+| `run_backtest.py` | `--factor-csv` | `없음` | 외부에서 만든 SMB/HML/WML csv 경로(index=월말 날짜) |
 | `run_backtest.py` | `--factor-cols` | `없음` | 팩터 회귀에 쓸 열 이름(콤마 구분, 예: 'SMB,HML') |
 | `run_backtest.py` | `--t-threshold` | `3` | 7단계 규칙 기반 판단에서 '유의하다'고 볼 \|t-stat\| 최소값 |
 | `run_backtest.py` | `--big-sales-len` | `7` |  |

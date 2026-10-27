@@ -111,7 +111,7 @@ def log_all_signals(dfs_by_indicator: dict[str, pd.DataFrame], symbol: str, hori
                      cost_bps: float = 0.0, slippage_bps=0.0,
                      drop_overlapping: bool = False) -> int:
     """SIGNAL_SPECS 전체를 순회하며 한 종목의 체결 로그를 한 번에 쌓는다.
-    run_backtest.py/run_advisor.py에서 호출할 상위 진입점. 새로 추가된 행 수를 반환한다."""
+    run_backtest.py에서 호출할 상위 진입점. 새로 추가된 행 수를 반환한다."""
     total_new = 0
     for indicator_key, event_col, direction, label in SIGNAL_SPECS:
         ind_df = dfs_by_indicator.get(indicator_key)

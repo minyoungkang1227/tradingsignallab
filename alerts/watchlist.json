@@ -1,8 +1,8 @@
 [
-  {"market": "krx", "symbol": "005930", "label": "삼성전자"},
-  {"market": "krx", "symbol": "000660", "label": "SK하이닉스"},
-  {"market": "krx", "symbol": "035420", "label": "NAVER"},
-  {"market": "krx", "symbol": "035720", "label": "카카오"},
-  {"market": "krx", "symbol": "005380", "label": "현대차"},
-  {"market": "upbit", "symbol": "KRW-BTC", "label": "비트코인"}
+  {"market": "krx", "symbol": "005930", "label": "삼성전자", "weight": 0.3},
+  {"market": "krx", "symbol": "000660", "label": "SK하이닉스", "weight": 0.3},
+  {"market": "krx", "symbol": "035420", "label": "NAVER", "weight": 0.15},
+  {"market": "krx", "symbol": "035720", "label": "카카오", "weight": 0.1},
+  {"market": "krx", "symbol": "005380", "label": "현대차", "weight": 0.15},
+  {"market": "upbit", "symbol": "KRW-BTC", "label": "비트코인", "weight": 1.0}
 ]
