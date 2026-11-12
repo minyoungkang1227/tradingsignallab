@@ -67,11 +67,18 @@ class DerivedLimits:
     alpha: float
     provenance: dict = field(default_factory=dict)   # 각 한도가 어디서 나왔는지
 
+    @property
+    def dd_enabled(self) -> bool:
+        """낙폭 서킷이 살아 있는지. 표본이 짧아 한도를 못 구하면 네 통제 중 서킷만 돌지 않는다."""
+        return bool(np.isfinite(self.dd_limit))
+
     def describe(self) -> str:
         p = self.provenance
+        # 한도를 못 구했을 때 "nan%"로 흘려보내지 않는다. 통제가 하나 빠진 상태라는 뜻이다.
+        dd = f"낙폭 한도 {self.dd_limit:.2%}" if self.dd_enabled else "낙폭 한도 없음 → 서킷 비활성"
         return (f"ES 한도 {self.es_target:.2%} ({p.get('es_target', '')}); "
                 f"종목 예산 {self.name_budget:.2%} ({p.get('name_budget', '')}); "
-                f"낙폭 한도 {self.dd_limit:.2%} ({p.get('dd_limit', '')})")
+                f"{dd} ({p.get('dd_limit', '')})")
 
 
 def max_drawdown(returns: pd.Series | np.ndarray) -> float:
@@ -122,11 +129,14 @@ def derive_limits(returns: pd.Series, alpha: float = DEFAULT_ALPHA, es_quantile:
     es_target = float(es.quantile(es_quantile))
     name_budget = es_target * name_budget_frac
     dd_limit, mdd = bootstrap_mdd_quantile(returns, quantile=dd_quantile, seed=seed)
+    n_ret = int(pd.Series(returns).dropna().size)
     prov = dict(
         es_target=f"{method} ES{alpha:.1%}[t] 시계열({len(es)}일)의 {es_quantile:.0%} 분위",
         name_budget=f"ES 한도 × {name_budget_frac:g}",
         dd_limit=(f"블록({BLOCK_LEN}일) 부트스트랩 {len(mdd)}경로 1년 MDD의 {dd_quantile:.0%} 분위"
-                  if len(mdd) else "표본 부족으로 미도출"),
+                  if len(mdd) else
+                  f"표본 부족으로 미도출 → 낙폭 서킷 비활성. 수익률 {n_ret}일 < 필요 {BLOCK_LEN * 3}일"
+                  f"(블록 {BLOCK_LEN}일 × 3)"),
     )
     return DerivedLimits(es_target=es_target, name_budget=name_budget, dd_limit=dd_limit, alpha=alpha, provenance=prov)
 
@@ -145,7 +155,9 @@ class ControlResult:
         return dict(days=int(len(lg)), undefined=int(lg["undefined"].sum()),
                     es_scaled=int((lg["scale_es"] < 1 - 1e-12).sum()),
                     name_capped_days=int((lg["n_name_capped"] > 0).sum()),
-                    daily_halts=int(lg["halt_next"].sum()), dd_active_days=int(lg["dd_active"].sum()))
+                    daily_halts=int(lg["halt_next"].sum()), dd_active_days=int(lg["dd_active"].sum()),
+                    # 0일(발동 안 함)과 비활성(한도가 없어 서킷 자체가 안 돎)은 다른 상태다
+                    dd_enabled=self.limits.dd_enabled)
 
 
 def apply_controls(weights: pd.DataFrame, closes, limits: DerivedLimits, *, alpha: float | None = None,
@@ -175,7 +187,7 @@ def apply_controls(weights: pd.DataFrame, closes, limits: DerivedLimits, *, alph
     prev_w = np.zeros(len(cols))
     es_v, wv, rr = es.to_numpy(), w_raw.to_numpy(), r_raw.to_numpy()
     sv = sym_vol.to_numpy()
-    has_dd = np.isfinite(limits.dd_limit)
+    has_dd = limits.dd_enabled
 
     for t in range(n):
         # 통제 후 자산 경로(t일 수익률은 t-1 비중 × t 수익률 = prev_w · r_i[t]) — 낙폭 판단용

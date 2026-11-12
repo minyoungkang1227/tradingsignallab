@@ -137,8 +137,13 @@ def main(argv=None):
         print("\n=== 통제 계층 (한도 도출 → 적용 → 비용·효과) ===")
         print(f"기준 척도 {method} ES{args.alpha:.1%}. 한도 출처: {limits.describe()}")
         c = cres.counts()
+        dd_txt = f"낙폭 서킷 {c['dd_active_days']}일" if c["dd_enabled"] else "낙폭 서킷 비활성"
         print(f"발동: 미정의(비중 0) {c['undefined']}일, ES 축소 {c['es_scaled']}일, 종목 예산 {c['name_capped_days']}일, "
-              f"일일손실 차단 {c['daily_halts']}회, 낙폭 서킷 {c['dd_active_days']}일 / 전체 {c['days']}일")
+              f"일일손실 차단 {c['daily_halts']}회, {dd_txt} / 전체 {c['days']}일")
+        if not c["dd_enabled"]:
+            # 0일로 찍으면 '발동 안 함'과 구별되지 않는다. 통제가 하나 빠진 채로 나온 비교표다.
+            print("경고: 표본이 짧아 낙폭 한도를 도출하지 못했습니다. 네 통제 중 낙폭 서킷브레이커는 적용되지 "
+                  "않았으며, 아래 비교표의 통제 효과는 그만큼 과소평가입니다. 사유는 위 '한도 출처' 참고.")
         with pd.option_context("display.float_format", "{:.4f}".format, "display.width", 200):
             print(cmp.to_string(index=False))
         print(f"통제 전 VaR 백테스트: {bt_raw.verdict} (초과 {bt_raw.n_exceed}/{bt_raw.n}, Kupiec p={bt_raw.kupiec['p']:.3f}, "

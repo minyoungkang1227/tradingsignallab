@@ -154,4 +154,26 @@ c = res_full.counts()
 assert c["es_scaled"] > 0 and c["undefined"] >= W
 print(f"[PASS] 5) 비교표: 통제 후 노출·변동성 감소, 발동 횟수 {c}")
 
+# --- 6) 표본이 짧아 낙폭 한도를 못 구하면 '비활성'이 드러나야 한다 (회귀) -----------------------
+# 예전에는 dd_limit이 NaN이 되고 apply_controls가 서킷을 조용히 건너뛰었다. counts()의
+# 낙폭 서킷은 0일로 찍혀서 '발동 안 함'과 구별되지 않았고, describe()는 "낙폭 한도 nan%"를
+# 흘려보냈다. 통제 네 개 중 하나가 빠진 채 비교표가 나오므로 드러나야 한다.
+SHORT = 55                    # 블록 20일 × 3 = 60일 미만. ES는 나오고 낙폭만 안 나오는 길이
+ix_s = pd.bdate_range("2022-01-01", periods=SHORT)
+S1 = pd.Series(100 * np.cumprod(1 + rng.normal(0, 0.012, SHORT)), index=ix_s)
+S2 = pd.Series(100 * np.cumprod(1 + rng.normal(0, 0.02, SHORT)), index=ix_s)
+lim_s = derive_limits(portfolio_returns(constant_weights({"S1": 0.5, "S2": 0.5}, ix_s), {"S1": S1, "S2": S2}),
+                      window=25)
+assert not lim_s.dd_enabled and np.isnan(lim_s.dd_limit)
+assert "서킷 비활성" in lim_s.describe() and "nan%" not in lim_s.describe()
+assert f"{SHORT - 1}일" in lim_s.provenance["dd_limit"], "사유에 실제 표본 일수가 없다"
+assert "60일" in lim_s.provenance["dd_limit"], "사유에 필요 일수가 없다"
+res_s = apply_controls(constant_weights({"S1": 0.5, "S2": 0.5}, ix_s), {"S1": S1, "S2": S2}, lim_s, window=25)
+c_s = res_s.counts()
+assert c_s["dd_enabled"] is False and c_s["dd_active_days"] == 0
+assert not res_s.log["dd_active"].any()
+# 한도가 있으면 같은 자리가 True로 바뀐다 (활성/비활성이 실제로 구분된다)
+assert DerivedLimits(es_target=0.02, name_budget=0.01, dd_limit=0.1, alpha=0.99).dd_enabled
+print(f"[PASS] 6) 표본 {SHORT}일: 낙폭 서킷 비활성이 dd_enabled·describe·사유에 드러남")
+
 print("\n모든 스모크테스트 통과. (합성 데이터 결과 — 실제 시장 성과가 아님)")
