@@ -23,10 +23,17 @@ import types
 from datetime import date, timedelta
 from pathlib import Path
 
+# mcp 패키지는 MCP 서버로 띄울 때만 필요하다. live_check.py 처럼 impl 함수만
+# 직접 부르는 경우에는 없어도 동작해야 하므로 import 실패를 여기서 삼킨다.
+_MCP_IMPORT_ERROR: str | None = None
 try:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP as _Server
-except ModuleNotFoundError:  # mcp 2.x
-    from mcp.server.mcpserver import MCPServer as _Server
+except ModuleNotFoundError:
+    try:  # mcp 2.x
+        from mcp.server.mcpserver import MCPServer as _Server
+    except ModuleNotFoundError as e:  # mcp 미설치
+        _Server = None
+        _MCP_IMPORT_ERROR = str(e)
 
 HERE = Path(__file__).resolve().parent
 SCENARIO = os.environ.get("FINAGENT_SCENARIO", "baseline")
@@ -364,6 +371,10 @@ def signal_evaluate_impl(symbol: str) -> str:
 # MCP 서버 등록 — 서버마다 필요한 도구만 노출(인터페이스 분리). 주문/체결 도구는 없다.
 # ════════════════════════════════════════════════════════════════════
 def build(kind: str):
+    if _Server is None:
+        raise SystemExit(
+            "MCP 서버로 띄우려면 mcp 패키지가 필요합니다: pip install mcp\n"
+            f"(import 실패: {_MCP_IMPORT_ERROR})")
     srv = _Server(f"finagent-{kind}")
     if kind == "dart":
         srv.tool()(dart_financials_impl)

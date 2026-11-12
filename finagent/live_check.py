@@ -11,6 +11,10 @@ live_check.py — MCP 서버 4종의 live 경로(실제 API)를 하나씩 점검
     ECOS_API_KEY  https://ecos.bok.or.kr      에서 발급
     FRED_API_KEY  https://fred.stlouisfed.org/docs/api/api_key.html
 KRX(signal)는 키가 필요 없고 pykrx 또는 yfinance 패키지가 필요하다.
+mcp 패키지는 이 스크립트에는 필요 없다(MCP 서버로 띄울 때만 필요).
+
+주의: pykrx 설치가 numpy를 2.x로 올려 scipy/streamlit 등을 깨뜨릴 수 있다.
+그런 경우 `pip install "numpy<2"` 로 되돌린다. 전용 conda 환경 사용을 권한다.
 
 이 스크립트는 MCP를 거치지 않고 서버 구현 함수를 직접 부른다.
 오케스트레이터 전체를 돌리기 전에 '어느 소스가 왜 실패하는지'만 빠르게 보기 위한 것이다.
