@@ -181,7 +181,13 @@ def apply_controls(weights: pd.DataFrame, closes, limits: DerivedLimits, *, alph
         # 통제 후 자산 경로(t일 수익률은 t-1 비중 × t 수익률 = prev_w · r_i[t]) — 낙폭 판단용
         if t > 0:
             ri = (px.iloc[t] / px.iloc[t - 1] - 1.0).to_numpy()
-            if np.isfinite(ri).all() or (prev_w == 0).all():
+            # 결측 판정은 '보유 종목'에만 건다(positions.portfolio_returns와 같은 규칙).
+            # cols는 weights에 한 번이라도 등장한 모든 종목이므로, 전체 유한성을 요구하면
+            # 비중 0인 종목 하나의 데이터 공백 때문에 그날 실제 손익이 자산 경로에서
+            # 빠진다. equity가 멈추면 dd·peak·낙폭 서킷이 모두 어긋나고, 진짜 낙폭
+            # 중에 서킷이 안 걸릴 수 있다.
+            held = prev_w != 0
+            if np.isfinite(ri[held]).all():                         # 보유 없음이면 빈 배열 -> True
                 equity *= 1.0 + float(np.nansum(prev_w * ri))
         peak = max(peak, equity)
         dd = 1.0 - equity / peak

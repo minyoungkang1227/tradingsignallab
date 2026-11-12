@@ -126,6 +126,25 @@ r2 = apply_controls(w, closes_fut, tight_es, window=W, method="fhs").weights.ilo
 assert np.allclose(r1.to_numpy(), r2.to_numpy())
 print("[PASS] 4f) 미래 가격을 바꿔도 과거 통제 비중 불변(룩어헤드 없음)")
 
+# 4g) 미보유 종목의 결측 가격이 낙폭 경로를 멈추게 하면 안 된다 (회귀)
+# 4e와 같은 구성(D 보유, E 비중 0)에서 E에만 결측을 넣는다. E는 들고 있지 않으니
+# 낙폭 판정에 아무 영향이 없어야 하고, dd·dd_active가 4e와 글자 그대로 같아야 한다.
+# 예전에는 결측 판정을 전체 종목에 걸어서, 비중 0인 E의 공백 하나 때문에 그날
+# 보유 종목 D의 실제 손익이 자산 경로에서 빠졌다. equity가 멈추면 dd가 과소평가되고
+# 진짜 낙폭 중에 서킷이 안 걸린다.
+E_gap = E_.copy()
+E_gap.iloc[305] = np.nan                                          # 낙폭 구간(300~320) 안쪽
+E_gap.iloc[310] = np.nan
+res_gap = apply_controls(constant_weights({"D": 1.0, "E": 0.0}, ix), {"D": D, "E": E_gap},
+                         dd_lim, window=W, method="fhs")
+lg_gap = res_gap.log
+assert np.allclose(lg_gap["dd"].to_numpy(), lg["dd"].to_numpy(), equal_nan=True), \
+    "미보유 종목 결측이 낙폭 경로를 바꿨다"
+assert (lg_gap["dd_active"].to_numpy() == lg["dd_active"].to_numpy()).all()
+assert lg_gap["dd"].iloc[319] > 0.20 and lg_gap["dd_active"].iloc[319]
+assert np.allclose(res_gap.weights["D"].to_numpy(), res_dd.weights["D"].to_numpy())
+print("[PASS] 4g) 미보유 종목(E) 결측 2일에도 낙폭·서킷·비중이 4e와 동일 — 보유 종목에만 결측 판정")
+
 # --- 5) 비교표와 자기 점검: 통제 후 ES 초과율 ---------------------------------------------------------
 res_full = apply_controls(w, closes, lim, window=W, method="fhs")
 cmp = compare_controlled(res_full)

@@ -1,0 +1,44 @@
+name: tests
+
+# 푸시·PR마다 스모크 스위트를 돌린다. 외부 API·네트워크에 의존할 수 있는
+# `external` 마커 테스트는 제외하므로 시크릿이 필요하지 않다. 그 테스트들은
+# 로컬에서 `pytest`(마커 없이)로 전체 실행해 확인한다.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: 스모크 스위트 (외부 의존 제외)
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: utf-8
+        run: python -m pytest -m "not external" --cov=. --cov-report=term-missing --cov-report=xml
+
+      - name: 커버리지 리포트 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: warn

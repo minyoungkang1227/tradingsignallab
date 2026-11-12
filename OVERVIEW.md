@@ -714,7 +714,7 @@ README.md            프로젝트 소개, 할 수 있는 일/입증되지 않은
 | `_smoke_test_risk_var.py` | 포트폴리오 수익률(전날 비중·숏·레버리지·결측), 역사적 VaR/ES·EWMA σ·파라메트릭·FHS 손계산, 룩어헤드 없음 |
 | `_smoke_test_var_backtest.py` | Kupiec·Christoffersen LR 손계산, 바젤 구간, 종합 판정, 정규 데이터에서 적합·변동성 전환 데이터에서 롤링 역사적 독립성 기각 |
 | `_smoke_test_run_risk.py` | run_risk.py 배관(표준 블록·CSV·옵션), 품질 게이트 연동, 입력 검증, --controls 출력·파일 |
-| `_smoke_test_limits.py` | MDD 손계산, 블록 부트스트랩 분위(재현성·표본 부족), 한도 도출=정의 일치, 네 한도 각각 독립 확인(ES 축소 배율·종목 예산 등식·일일 차단·낙폭 히스테리시스), 룩어헤드 없음 |
+| `_smoke_test_limits.py` | MDD 손계산, 블록 부트스트랩 분위(재현성·표본 부족), 한도 도출=정의 일치, 네 한도 각각 독립 확인(ES 축소 배율·종목 예산 등식·일일 차단·낙폭 히스테리시스), 룩어헤드 없음, 미보유 종목 결측 가격이 낙폭 경로를 멈추지 않음(회귀) |
 | `_smoke_test_vol_regime.py` | 실현변동성·확장 분위수 상태기계·히스테리시스 손계산, 독립 구현 일치, 인과성, regime_study 연결과 기본값 보존 |
 | `_smoke_test_profiles.py` | 프로필 적용·사용자 옵션 우선·기본값 보존 |
 | `_smoke_test_walkforward.py` | fold 생성, 신호별 합산, 이질성(Cochran Q) 판정, 경계 처리 |

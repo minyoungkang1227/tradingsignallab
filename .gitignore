@@ -3,3 +3,10 @@ __pycache__/
 output/
 output_app_test/
 .streamlit/secrets.toml
+
+# pytest / coverage 산출물
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
